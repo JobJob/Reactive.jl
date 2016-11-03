@@ -35,11 +35,12 @@ function connect_map(f, output, inputs...)
     let prev_timestep = 0
         for inp in inputs
             add_action!(inp, output) do output, timestep
-                if prev_timestep != timestep
+                # if prev_timestep != timestep
                     result = f(map(value, inputs)...)
+                    result != nothing && @show prev_timestep timestep result "------------"
                     send_value!(output, result, timestep)
                     prev_timestep = timestep
-                end
+                # end
             end
         end
     end
