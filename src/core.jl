@@ -1,6 +1,8 @@
 import Base: push!, eltype, close
 export Signal, push!, value, preserve, unpreserve, close
 
+using DataStructures
+
 ##### Signal #####
 
 const debug_memory = false # Set this to true to debug gc of nodes
@@ -32,6 +34,8 @@ else
         end
     end
 end
+
+const action_queue = OrderedDict{Signal, Tuple{Function, Tuple{Vararg{Signal}}}}()
 
 log_gc(n) =
     @async begin
@@ -201,7 +205,11 @@ let timestep::Int = 0, stop_runner::Bool = false
         post_empty() # make sure it's not waiting on an empty message list
     end
 
-
+    Base.shift!(od::OrderedDict) = begin
+        firstkey = od |> keys |> first
+        res = od[firstkey]; delete!(od, firstkey)
+        firstkey=>res
+    end
 
     """
     Processes `n` messages from the Reactive event queue.
@@ -213,6 +221,10 @@ let timestep::Int = 0, stop_runner::Bool = false
                 isa(message, EmptyMessage) && continue # ignore emtpy messages
                 try
                     send_value!(message.node, message.value, timestep)
+                    while length(action_queue) > 0
+                        (node, (actionf, inputsigs)) = shift!(action_queue)
+                        actionf(inputsigs, timestep)
+                    end
                 catch err
                     if isa(err, InterruptException)
                         println("Reactive event loop was inturrupted.")

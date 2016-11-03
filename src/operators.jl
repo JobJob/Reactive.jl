@@ -6,7 +6,7 @@ end
 
 export map,
        probe,
-       filter, 
+       filter,
        filterwhen,
        foldp,
        sampleon,
@@ -33,14 +33,17 @@ end
 
 function connect_map(f, output, inputs...)
     let prev_timestep = 0
+        actionf(inputs, timestep) = begin
+            result = f(map(value, inputs)...)
+            # result != nothing && @show prev_timestep timestep result "------------"
+            send_value!(output, result, timestep)
+            prev_timestep = timestep
+        end
         for inp in inputs
             add_action!(inp, output) do output, timestep
-                # if prev_timestep != timestep
-                    result = f(map(value, inputs)...)
-                    result != nothing && @show prev_timestep timestep result "------------"
-                    send_value!(output, result, timestep)
-                    prev_timestep = timestep
-                # end
+                #delete and re-add to retain earlier/later order (depth first vs breadth first though, so dunno)
+                # haskey(action_queue, output) && delete!(action_queue, output)
+                action_queue[output] = (actionf, inputs)
             end
         end
     end
@@ -154,12 +157,12 @@ end
 function connect_merge(output, inputs...)
     let prev_timestep = 0
         for inp in inputs
+            actionf(inputs, timestep) = begin
+                send_value!(output, value(inp), timestep)
+                prev_timestep = timestep
+            end
             add_action!(inp, output) do output, timestep
-                # don't update twice in the same timestep
-                if prev_timestep != timestep 
-                    send_value!(output, value(inp), timestep)
-                    prev_time = timestep
-                end
+                action_queue[output] = (actionf, inputs)
             end
         end
     end
