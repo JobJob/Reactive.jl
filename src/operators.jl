@@ -6,7 +6,7 @@ end
 
 export map,
        probe,
-       filter, 
+       filter,
        filterwhen,
        foldp,
        sampleon,
@@ -18,16 +18,17 @@ export map,
        bind!,
        unbind!
 
+initval(f, inputs) = f(map(value, (inputs...))...)
 """
     map(f, s::Signal...) -> signal
 
 Transform signal `s` by applying `f` to each element. For multiple signal arguments, apply `f` elementwise.
 """
-function map(f, input::Signal, inputsrest::Signal...;
-             init=f(map(value, (input,inputsrest...))...), typ=typeof(init))
+function map(f, inputs::Signal...;
+             init=initval(f, inputs), typ=typeof(init))
 
-    n = Signal(typ, init, (input,inputsrest...))
-    connect_map(f, n, input, inputsrest...)
+    n = Signal(typ, init, (inputs...))
+    connect_map(f, n, inputs...)
     n
 end
 
@@ -53,7 +54,9 @@ probe(node, name, io=STDERR) =
 
 Same as `map`, but will be prevented from gc until all the inputs have gone out of scope. Should be used in cases where `f` does a side-effect.
 """
-foreach(f, inputs::Signal...) = preserve(map(f, inputs...))
+foreach(f, inputs::Signal...;
+        init=initval(f, inputs),
+        typ=typeof(init)) = preserve(map(f, inputs...; init=init, typ=typ))
 
 """
     filter(f, signal)
@@ -155,7 +158,7 @@ function connect_merge(output, inputs...)
         for inp in inputs
             add_action!(inp, output) do output, timestep
                 # don't update twice in the same timestep
-                if prev_timestep != timestep 
+                if prev_timestep != timestep
                     send_value!(output, value(inp), timestep)
                     prev_time = timestep
                 end
