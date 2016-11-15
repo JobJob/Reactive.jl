@@ -33,18 +33,16 @@ end
 
 function connect_map(f, output, inputs...)
     let prev_timestep = 0
-        actionf(inputs, timestep) = begin
-            result = f(map(value, inputs)...)
-            # result != nothing && @show prev_timestep timestep result "------------"
-            send_value!(output, result, timestep)
-            prev_timestep = timestep
-        end
-        for inp in inputs
-            add_action!(inp, output) do output, timestep
-                #delete and re-add to retain earlier/later order (depth first vs breadth first though, so dunno)
-                # haskey(action_queue, output) && delete!(action_queue, output)
-                action_queue[output] = (actionf, inputs)
-            end
+        add_action!(output) do output, timestep
+            # if prev_timestep != timestep
+                prev_timestep == timestep && for i in 1:20
+                    println("asdklfa;lkdsjfa;sdkflas;dlfkjas;dlfkjasdf bugger!")
+                end
+                result = f(map(value, inputs)...)
+                # result != nothing && @show prev_timestep timestep result "------------"
+                send_value!(output, result, timestep)
+                prev_timestep = timestep
+            # end
         end
     end
 end
@@ -71,9 +69,14 @@ function filter{T}(f::Function, default, input::Signal{T})
 end
 
 function connect_filter(f, default, output, input)
-    add_action!(input, output) do output, timestep
+    add_action!(output) do output, timestep
         val = value(input)
-        f(val) && send_value!(output, val, timestep)
+        if f(val)
+            output.alive = true
+            send_value!(output, val, timestep)
+        else
+            output.alive = false
+        end
     end
 end
 
@@ -91,8 +94,13 @@ function filterwhen{T}(predicate::Signal{Bool}, default, input::Signal{T})
 end
 
 function connect_filterwhen(output, predicate, input)
-    add_action!(input, output) do output, timestep
-        value(predicate) && send_value!(output, value(input), timestep)
+    add_action!(output) do output, timestep
+        if value(predicate)
+            output.alive = true
+            send_value!(output, value(input), timestep)
+        else
+            output.alive = false
+        end
     end
 end
 
@@ -113,7 +121,7 @@ end
 function connect_foldp(f, v0, output, inputs)
     let acc = v0
         for inp in inputs
-            add_action!(inp, output) do output, timestep
+            add_action!(output) do output, timestep
                 vals = map(value, inputs)
                 acc = f(acc, vals...)
                 send_value!(output, acc, timestep)
@@ -134,7 +142,8 @@ function sampleon{T}(sampler, input::Signal{T})
 end
 
 function connect_sampleon(output, sampler, input)
-    add_action!(sampler, output) do output, timestep
+    #XXX doesn't make sense... fuck
+    add_action!(output) do output, timestep
         send_value!(output, value(input), timestep)
     end
 end
@@ -156,16 +165,34 @@ end
 
 function connect_merge(output, inputs...)
     let prev_timestep = 0
-        for inp in inputs
-            actionf(inputs, timestep) = begin
-                send_value!(output, value(inp), timestep)
-                prev_timestep = timestep
-            end
-            add_action!(inp, output) do output, timestep
-                action_queue[output] = (actionf, inputs)
+        for origin in output.origins
+            # don't update twice in the same timestep
+            add_action!(output, origin) do output, timestep
+                lastactiveref = getlastactive(origin, output)
+                if !isnull(lastactiveref)
+                    send_value!(output, value(lastactiveref.value), timestep)
+                end
             end
         end
     end
+end
+
+"""
+search in action_queues[origin] for node.parents
+"""
+function getlastactive(origin, node)
+    actionq = action_queues[origin]
+    i = length(actionq)
+    lastactive = Nullable{Signal}()
+    while i > 0
+        action_node = actionq[i].recipient.value
+        if action_node.alive && action_node in node.parents
+            lastactive = Nullable{Signal}(action_node)
+            break
+        end
+        i -= 1
+    end
+    lastactive
 end
 
 """
@@ -182,7 +209,7 @@ end
 
 function connect_previous(output, input)
     let prev_value = value(input)
-        add_action!(input, output) do output, timestep
+        add_action!(output) do output, timestep
             send_value!(output, prev_value, timestep)
             prev_value = value(input)
         end
@@ -204,7 +231,7 @@ function delay{T}(input::Signal{T}, default=value(input))
 end
 
 function connect_delay(output, input)
-    add_action!(input, output) do output, timestep
+    add_action!(output) do output, timestep
         push!(output, value(input))
     end
 end
@@ -223,7 +250,7 @@ end
 
 function connect_droprepeats(output, input)
     let prev_value = value(input)
-        add_action!(input, output) do output, timestep
+        add_action!(output) do output, timestep
             if prev_value != value(input)
                 send_value!(output, value(input), timestep)
                 prev_value = value(input)
@@ -251,14 +278,14 @@ function connect_flatten(output, input)
             send_value!(output, value(value(input)), timestep)
         end
 
-        add_action!(callback, current_node, output)
+        add_action!(callback, output)
 
-        add_action!(input, output) do output, timestep
+        add_action!(output) do output, timestep
 
             # Move around action from previous node to current one
             remove_action!(callback, current_node, output)
             current_node = value(input)
-            add_action!(callback, current_node, output)
+            add_action!(callback, output)
 
             send_value!(output, value(current_node), timestep)
         end
@@ -276,7 +303,7 @@ To only bind updates from b to a, pass in a third argument as `false`
 function bind!(a::Signal, b::Signal, twoway=true)
 
     let current_timestep = 0
-        action = add_action!(b, a) do a, timestep
+        action = add_action!(a) do a, timestep
             if current_timestep != timestep
                 current_timestep = timestep
                 send_value!(a, value(b), timestep)

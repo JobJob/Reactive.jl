@@ -36,16 +36,18 @@ facts("Basic checks") do
         @fact value(b) --> value(a)^2
 
         ## Multiple inputs to Lift
-        c = map(+, a, b, typ=Int)
-        @fact value(c) --> value(a) + value(b)
+        d = Signal(number())
+        c = map(+, a, b, d, typ=Int)
+        @fact value(c) --> value(a) + value(b) + value(d)
 
         push!(a, number())
         step()
-        @fact value(c) --> value(a) + value(b)
+        @fact value(c) --> value(a) + value(b) + value(d)
 
-        push!(b, number())
+
+        push!(d, number())
         step()
-        @fact value(c) --> value(a) + value(b)
+        @fact value(c) --> value(a) + value(b) + value(d)
     end
 
 

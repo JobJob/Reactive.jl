@@ -14,20 +14,30 @@ if !debug_memory
     type Signal{T}
         value::T
         parents::Tuple
+        origins::Tuple
         actions::Vector
         alive::Bool
         preservers::Dict
+        function Signal(v, parents, actions, alive, pres)
+            origins = getorigins(parents)
+            n=new(v,parents,origins,actions,alive,pres)
+            isempty(origins) && (action_queues[n] = [])
+            n
+        end
     end
 else
     type Signal{T}
         value::T
         parents::Tuple
+        origins::Tuple
         actions::Vector
         alive::Bool
         preservers::Dict
         bt
         function Signal(v, parents, actions, alive, pres)
-            n=new(v,parents,actions,alive,pres,backtrace())
+            origins = getorigins(parents)
+            n=new(v,parents,origins,actions,alive,pres,backtrace())
+            isempty(origins) && (action_queues[n] = [])
             nodes[n] = nothing
             finalizer(n, log_gc)
             n
@@ -35,7 +45,20 @@ else
     end
 end
 
-const action_queue = OrderedDict{Signal, Tuple{Function, Tuple{Vararg{Signal}}}}()
+function getorigins(parents)
+    origins = Dict{Signal, Bool}()
+    for parent in parents
+        if isempty(parent.origins)
+            origins[parent] = true
+        else
+            for origin in parent.origins
+                origins[origin] = true
+            end
+        end
+    end
+    return (keys(origins)...)
+end
+
 
 log_gc(n) =
     @async begin
@@ -50,7 +73,12 @@ immutable Action
     recipient::WeakRef
     f::Function
 end
-isrequired(a::Action) = a.recipient.value != nothing && a.recipient.value.alive
+isrequired(a::Action) =
+    any(map(n->n.alive, a.recipient.value.parents)) &&
+    a.recipient.value != nothing &&
+    a.recipient.value.alive
+
+const action_queues = Dict{Signal, Vector{Action}}()
 
 Signal{T}(x::T, parents=()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}())
 Signal{T}(::Type{T}, x, parents=()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}())
@@ -100,9 +128,15 @@ eltype{T}(::Type{Signal{T}}) = T
 
 ##### Connections #####
 
-function add_action!(f, node, recipient)
+function add_action!(f, recipient, origin=nothing)
     a = Action(WeakRef(recipient), f)
-    push!(node.actions, a)
+    if origin == nothing
+        for origin in recipient.origins #empty for inputs to graph, i.e. nodes that are push!ed to, including time nodes like fps
+            push!(action_queues[origin], a)
+        end
+    else
+        push!(action_queues[origin], a)
+    end
     a
 end
 
@@ -111,6 +145,7 @@ function remove_action!(f, node, recipient)
 end
 
 function close(n::Signal, warn_nonleaf=true)
+    #XXX: make this work
     finalize(n) # stop timer etc.
     n.alive = false
     if !isempty(n.actions)
@@ -130,9 +165,9 @@ function send_value!(node::Signal, x, timestep)
 
     # Set the value and do actions
     node.value = x
-    for action in node.actions
-        do_action(action, timestep)
-    end
+    # for action in node.actions
+    #     do_action(action, timestep)
+    # end
 end
 send_value!(wr::WeakRef, x, timestep) = wr.value != nothing && send_value!(wr.value, x, timestep)
 
@@ -221,9 +256,11 @@ let timestep::Int = 0, stop_runner::Bool = false
                 isa(message, EmptyMessage) && continue # ignore emtpy messages
                 try
                     send_value!(message.node, message.value, timestep)
-                    while length(action_queue) > 0
-                        (node, (actionf, inputsigs)) = shift!(action_queue)
-                        actionf(inputsigs, timestep)
+                    for action in action_queues[message.node]
+                        do_action(action, timestep)
+                    end
+                    foreach(action_queues[message.node]) do action
+                        action.recipient.value.alive = true
                     end
                 catch err
                     if isa(err, InterruptException)

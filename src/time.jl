@@ -8,7 +8,7 @@ Throttle a signal to update at most once every dt seconds. By default, the throt
 This behavior can be changed by the `f`, `init` and `reinit` arguments. The `init` and `f` functions are similar to `init` and `f` in `foldp`. `reinit` is called when a new throttle time window opens to reinitialize the initial value for accumulation, it gets one argument, the previous accumulated value.
 
 For example
-    y = throttle(0.2, x, push!, Int[], _->Int[])
+    y = throttle(0.2, x, push!, Int[], a->Int[])
 will create vectors of updates to the integer signal `x` which occur within 0.2 second time windows.
 
 """
@@ -21,7 +21,7 @@ end
 # Aggregate a signal producing an update at most once in dt seconds
 function throttle_connect(dt, output, input, f, init, reinit)
     let collected = init, timer = Timer(x->x, 0)
-        add_action!(input, output) do output, timestep
+        add_action!(output) do output, timestep
             collected = f(collected,  value(input))
             close(timer)
             timer = Timer(x -> begin push!(output, collected); collected=reinit(collected) end, dt)
@@ -74,7 +74,7 @@ function fpswhen_connect(rate, switch, switch_ons, output)
         switchref = WeakRef(switch)
 
         for inp in [output, switch_ons]
-            add_action!(inp, output) do output, timestep
+            add_action!(output) do output, timestep
                 start_time = time()
                 setup_next_tick(outputref, switchref, start_time-prev_time, dt)
                 prev_time = start_time
