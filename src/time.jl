@@ -14,17 +14,32 @@ will create vectors of updates to the integer signal `x` which occur within 0.2 
 """
 function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init))
     output = Signal(typ, init, (node,))
+    #the buck starts here, child nodes need to activate on push to this node...
+    action_queues[output] = []
+    output.roots = ()
     throttle_connect(dt, output, node, f, init, reinit)
     output
 end
 
 # Aggregate a signal producing an update at most once in dt seconds
 function throttle_connect(dt, output, input, f, init, reinit)
-    let collected = init, timer = Timer(x->x, 0)
-        add_action!(output) do output, timestep
-            collected = f(collected,  value(input))
-            close(timer)
-            timer = Timer(x -> begin push!(output, collected); collected=reinit(collected) end, dt)
+    let collected = init, timer = Timer(x->x, 0), prevpush = time()
+        dopush(_) = begin
+            push!(output, collected)
+            collected = reinit(collected)
+            prevpush = time()
+        end
+        for root in allroots(input)
+            add_action!(output, root) do output, timestep
+                collected = f(collected,  value(input))
+                elapsed = time() - prevpush
+                close(timer)
+                if elapsed > dt
+                    dopush(elapsed)
+                else
+                    timer = Timer(dopush, dt-elapsed)
+                end
+            end
         end
     end
 end
@@ -42,7 +57,7 @@ end
 
 function every_connect(dt, output)
     outputref = WeakRef(output)
-    timer = Timer(x -> _push!(outputref, time(), ()->close(timer)), dt, dt)
+    timer = Timer(x -> _push!(outputref.value, time(), ()->close(timer)), dt, dt)
     finalizer(output, _->close(timer))
     output
 end
@@ -52,35 +67,39 @@ end
 
 returns a signal which when `switch` signal is true, updates `rate` times every second. If `rate` is not possible to attain because of slowness in computing dependent signal values, the signal will self adjust to provide the best possible rate.
 """
-function fpswhen(switch, rate)
-    switch_ons = filter(x->x, false, switch) # only turn-ons
-    n = Signal(Float64, 0.0, (switch, switch_ons,))
-    fpswhen_connect(rate, switch, switch_ons, n)
+function fpswhen(switch, rate; name=auto_name())
+    n = Signal(Float64, 0.0, (switch,); name=name)
+    #fpswhen has parents so by default won't have an action queue
+    #but it gets pushed to in timer, so it has to
+    action_queues[n] = []
+    n.roots = ()
+    fpswhen_connect(rate, switch, n)
     n
 end
 
 function setup_next_tick(outputref, switchref, dt, wait_dt)
     if value(switchref.value)
-        Timer(t -> if value(switchref.value)
-                       _push!(outputref, dt)
-                   end, wait_dt)
+        Timer(t -> begin
+            if value(switchref.value)
+                _push!(outputref.value, dt)
+            end
+       end, wait_dt)
     end
 end
 
-function fpswhen_connect(rate, switch, switch_ons, output)
+function fpswhen_connect(rate, switch, output)
     let prev_time = time()
         dt = 1.0/rate
         outputref = WeakRef(output)
         switchref = WeakRef(switch)
 
-        for inp in [output, switch_ons]
-            add_action!(output) do output, timestep
+        for action_queue in (allroots(switch)..., output)
+            add_action!(output, action_queue) do output, timestep
                 start_time = time()
                 setup_next_tick(outputref, switchref, start_time-prev_time, dt)
                 prev_time = start_time
             end
         end
-
         setup_next_tick(outputref, switchref, dt, dt)
     end
 end

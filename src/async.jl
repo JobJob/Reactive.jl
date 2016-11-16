@@ -9,6 +9,7 @@ Spawn a new task to run a function when input signal updates. Returns a signal o
 function async_map(f, init, inputs...; typ=typeof(init), onerror=print_error)
 
     node = Signal(typ, init, inputs)
+    action_queues[node] = []
     map(inputs...; init=nothing, typ=Any) do args...
         outer_task = current_task()
         @async begin

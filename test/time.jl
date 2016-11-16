@@ -63,7 +63,7 @@ facts("Timing functions") do
         @fact value(z) --> 0
         @fact queue_size() --> 0
 
-        sleep(0.55)
+        sleep(0.6)
 
         @fact queue_size() --> 1
         step()
@@ -77,22 +77,31 @@ facts("Timing functions") do
         @fact value(z′) --> 1
         @fact value(y′) --> Int[1,2,3]
 
-        push!(x, 3)
+        @fact queue_size() --> 0
+        push!(x, 4)
+        step() #has been greater than 0.5 secs, will trigger push to y
+        @fact value(y) --> 3
+        @fact value(z) --> 1
         step()
+        @fact value(y) --> 4
+        @fact value(z) --> 2
 
         push!(x, 2)
         step()
 
         push!(x, 1)
         step()
-        sleep(1)
+        @fact value(y) --> 4
+        @fact value(z) --> 2
+        @fact queue_size() --> 0
+        sleep(1.1)
 
         @fact queue_size() --> 2
         step()
         step()
         @fact value(y) --> 1
         @fact value(z′) --> 2
-        @fact value(y′) --> Int[3,2,1]
+        @fact value(y′) --> Int[4,2,1]
 
         # type safety
         s1 = Signal(3)

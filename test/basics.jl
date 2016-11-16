@@ -103,6 +103,18 @@ facts("Basic checks") do
         @fact value(h) --> 3
     end
 
+    context("filter counts") do
+        a = Signal(1; name="a")
+        b = Signal(2; name="b")
+        c = filter(value(a), a; name="c") do aval; aval > 1 end
+        d = map(*,b,c)
+        count = foldp((x, y) -> x+1, 0, d)
+        @fact value(count) --> 0
+        push!(a, 0)
+        step()
+        @fact value(count) --> 0
+    end
+
     context("sampleon") do
         # sampleon
         g = Signal(0)

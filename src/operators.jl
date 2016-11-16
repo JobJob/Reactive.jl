@@ -24,9 +24,10 @@ export map,
 Transform signal `s` by applying `f` to each element. For multiple signal arguments, apply `f` elementwise.
 """
 function map(f, input::Signal, inputsrest::Signal...;
-             init=f(map(value, (input,inputsrest...))...), typ=typeof(init))
+             init=f(map(value, (input,inputsrest...))...),
+             typ=typeof(init), name=auto_name())
 
-    n = Signal(typ, init, (input,inputsrest...))
+    n = Signal(typ, init, (input,inputsrest...); name=name)
     connect_map(f, n, input, inputsrest...)
     n
 end
@@ -34,15 +35,12 @@ end
 function connect_map(f, output, inputs...)
     let prev_timestep = 0
         add_action!(output) do output, timestep
-            # if prev_timestep != timestep
-                prev_timestep == timestep && for i in 1:20
-                    println("asdklfa;lkdsjfa;sdkflas;dlfkjas;dlfkjasdf bugger!")
-                end
-                result = f(map(value, inputs)...)
-                # result != nothing && @show prev_timestep timestep result "------------"
-                send_value!(output, result, timestep)
-                prev_timestep = timestep
-            # end
+            prev_timestep == timestep && for i in 1:20
+                println("asdklfa;lkdsjfa;sdkflas;dlfkjas;dlfkjasdf bugger!")
+            end
+            result = f(map(value, inputs)...)
+            send_value!(output, result, timestep)
+            prev_timestep = timestep
         end
     end
 end
@@ -62,8 +60,8 @@ foreach(f, inputs::Signal...) = preserve(map(f, inputs...))
 
 remove updates from the signal where `f` returns `false`.
 """
-function filter{T}(f::Function, default, input::Signal{T})
-    n = Signal(T, f(value(input)) ? value(input) : default, (input,))
+function filter{T}(f::Function, default, input::Signal{T}; name=auto_name())
+    n = Signal(T, f(value(input)) ? value(input) : default, (input,); name=name)
     connect_filter(f, default, n, input)
     n
 end
@@ -72,7 +70,6 @@ function connect_filter(f, default, output, input)
     add_action!(output) do output, timestep
         val = value(input)
         if f(val)
-            output.alive = true
             send_value!(output, val, timestep)
         else
             output.alive = false
@@ -112,20 +109,18 @@ end
 Accumulate a value as the `input` signal changes. `init` is the initial value of the accumulator.
 `f` should take 2 arguments: the current accumulated value and the current update, and result in the next accumulated value.
 """
-function foldp(f::Function, v0, inputs...; typ=typeof(v0))
-    n = Signal(typ, v0, inputs)
+function foldp(f::Function, v0, inputs...; typ=typeof(v0), name=auto_name())
+    n = Signal(typ, v0, inputs; name=name)
     connect_foldp(f, v0, n, inputs)
     n
 end
 
 function connect_foldp(f, v0, output, inputs)
     let acc = v0
-        for inp in inputs
-            add_action!(output) do output, timestep
-                vals = map(value, inputs)
-                acc = f(acc, vals...)
-                send_value!(output, acc, timestep)
-            end
+        add_action!(output) do output, timestep
+            vals = map(value, inputs)
+            acc = f(acc, vals...)
+            send_value!(output, acc, timestep)
         end
     end
 end
@@ -142,8 +137,7 @@ function sampleon{T}(sampler, input::Signal{T})
 end
 
 function connect_sampleon(output, sampler, input)
-    #XXX doesn't make sense... fuck
-    add_action!(output) do output, timestep
+    add_action!(output, sampler) do output, timestep
         send_value!(output, value(input), timestep)
     end
 end
@@ -156,38 +150,36 @@ Merge many signals into one. Returns a signal which updates when
 any of the inputs update. If many signals update at the same time,
 the value of the *youngest* input signal is taken.
 """
-function merge(inputs...)
+function merge(inputs...; name=auto_name())
     @assert length(inputs) >= 1
-    n = Signal(typejoin(map(eltype, inputs)...), value(inputs[1]), inputs)
+    n = Signal(typejoin(map(eltype, inputs)...), value(inputs[1]), inputs; name=name)
     connect_merge(n, inputs...)
     n
 end
 
 function connect_merge(output, inputs...)
     let prev_timestep = 0
-        for origin in output.origins
+        for root in output.roots
             # don't update twice in the same timestep
-            add_action!(output, origin) do output, timestep
-                lastactiveref = getlastactive(origin, output)
-                if !isnull(lastactiveref)
-                    send_value!(output, value(lastactiveref.value), timestep)
-                end
+            add_action!(output, root) do output, timestep
+                lastactive = getlastactive(root, output)
+                send_value!(output, value(lastactive), timestep)
             end
         end
     end
 end
 
 """
-search in action_queues[origin] for node.parents
+search in action_queues[root] for node.parents
 """
-function getlastactive(origin, node)
-    actionq = action_queues[origin]
+function getlastactive(root, node)
+    actionq = action_queues[root]
     i = length(actionq)
-    lastactive = Nullable{Signal}()
+    lastactive = last(node.parents) # defaults to last signal parent
     while i > 0
         action_node = actionq[i].recipient.value
         if action_node.alive && action_node in node.parents
-            lastactive = Nullable{Signal}(action_node)
+            lastactive = action_node
             break
         end
         i -= 1
@@ -226,12 +218,15 @@ Returns the delayed signal.
 """
 function delay{T}(input::Signal{T}, default=value(input))
     n = Signal(T, default, (input,))
+    #n gets pushed to so has to be the root of an action_queue
+    n.roots = ()
+    action_queues[n] = []
     connect_delay(n, input)
     n
 end
 
 function connect_delay(output, input)
-    add_action!(output) do output, timestep
+    add_action!(output, input) do output, timestep
         push!(output, value(input))
     end
 end
@@ -254,6 +249,8 @@ function connect_droprepeats(output, input)
             if prev_value != value(input)
                 send_value!(output, value(input), timestep)
                 prev_value = value(input)
+            else
+                output.alive = false
             end
         end
     end
@@ -266,30 +263,94 @@ Flatten a signal of signals into a signal which holds the
 value of the current signal. The `typ` keyword argument specifies
 the type of the flattened signal. It is `Any` by default.
 """
-function flatten(input::Signal; typ=Any)
-    n = Signal(typ, value(value(input)), (input,))
+function flatten(input::Signal; typ=Any, name=auto_name())
+    n = Signal(typ, value(value(input)), (input,); name=name)
     connect_flatten(n, input)
     n
 end
 
 function connect_flatten(output, input)
-    let current_node = value(input),
-        callback = (output, timestep) -> begin
-            send_value!(output, value(value(input)), timestep)
+    let current_node = value(input)
+        wire_flatten(current_node, subtree_actions::Vector{Action}) = begin
+            #children of this flatten node need to know to update
+            #on changes to the input sigsig (allroots(input)),
+            #or changes to the value of the current sig (roots == allroots(current_node))
+            # @show "switched to " current_node
+            roots = allroots(current_node)
+            for root in roots
+                #ensure updates when current_node gets pushed a new value
+                add_action!(output, root) do output, timestep
+                    send_value!(output, value(current_node), timestep)
+                end
+                #ensure updates for subtree too, if action is already in queue
+                #remove it and readd it so it's deeper down. XXX I think that's
+                #mostly correct but prob not 100%
+                queue = action_queues[root]
+                for action in subtree_actions
+                    deleteat!(queue, findin(queue, 6))
+                end
+                append!(queue, subtree_actions)
+            end
+            output.roots = (OrderedSet((allroots(input)..., roots...))...)
         end
-
-        add_action!(callback, output)
-
-        add_action!(output) do output, timestep
-
-            # Move around action from previous node to current one
-            remove_action!(callback, current_node, output)
-            current_node = value(input)
-            add_action!(callback, output)
-
-            send_value!(output, value(current_node), timestep)
+        wire_flatten(current_node, Action[])
+        inp_roots = allroots(input)
+        for inp_root in inp_roots
+            add_action!(output, inp_root) do output, timestep
+                #input gets pushed a new signal
+                #remove all children from action queues of prev signal
+                oldroots = allroots(current_node)
+                subtree_actions = Action[]
+                for deadroot in oldroots
+                    subtree_actions = queue_subtree_actions(action_queues[deadroot], output)
+                    for action in subtree_actions
+                        #subtlety: iff the sub-node is also connected
+                        #to the deadroot via another path (i.e. not via this flatten)
+                        #it will be incorrectly removed from that action tree.
+                        #so we must ignore nodes whose ancestors without this node
+                        #contain deadroot
+                        node = action.recipient.value
+                        deadroot in roots_without(node, output) && continue
+                        remove_actions!(node, deadroot)
+                    end
+                end
+                current_node = value(input)
+                send_value!(output, value(current_node), timestep)
+                wire_flatten(current_node, subtree_actions)
+            end
         end
     end
+end
+
+queue_subtree_actions(queue, basenode) = begin
+    baseidx = find(action->action.recipient.value == basenode, queue) |> first
+    subtree_nodes = Any[basenode]
+    subtree_actions = Action[queue[baseidx]]
+    for actionidx in baseidx:length(queue)
+        action = queue[actionidx]
+        node = action.recipient.value
+        if any(map(node.parents) do node; node in subtree_nodes end)
+            #node has parents that are in the sub-tree
+            push!(subtree_nodes, node)
+            push!(subtree_actions, action)
+        end
+    end
+    subtree_actions
+end
+
+"""
+find roots in paths not through ignorenode
+"""
+roots_without(startnode, ignorenode; roots = Dict{Signal, Bool}()) = begin
+    goodparents = filter(startnode.parents) do parent; parent != ignorenode end
+    for parent in goodparents
+        if isempty(parent.parents)
+            roots[parent] = true
+        else
+            roots_without(parent, ignorenode; roots=roots)
+        end
+    end
+    keys(roots)
 end
 
 const _bindings = Dict()

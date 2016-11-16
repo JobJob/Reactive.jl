@@ -9,19 +9,25 @@ const debug_memory = false # Set this to true to debug gc of nodes
 
 const nodes = WeakKeyDict()
 const io_lock = ReentrantLock()
+const node_count = Ref(1) #1 since auto_name gets called before count is incremented
+
+auto_name() = string(node_count[])
+
 
 if !debug_memory
     type Signal{T}
         value::T
         parents::Tuple
-        origins::Tuple
+        roots::Tuple
         actions::Vector
         alive::Bool
         preservers::Dict
-        function Signal(v, parents, actions, alive, pres)
-            origins = getorigins(parents)
-            n=new(v,parents,origins,actions,alive,pres)
-            isempty(origins) && (action_queues[n] = [])
+        name::String
+        function Signal(v, parents, actions, alive, pres, name)
+            roots = getroots(parents)
+            node_count[] += 1
+            n=new(v,parents,roots,actions,alive,pres,name)
+            isempty(roots) && (action_queues[n] = [])
             n
         end
     end
@@ -29,15 +35,17 @@ else
     type Signal{T}
         value::T
         parents::Tuple
-        origins::Tuple
+        roots::Tuple
         actions::Vector
         alive::Bool
         preservers::Dict
+        name::String
         bt
-        function Signal(v, parents, actions, alive, pres)
-            origins = getorigins(parents)
-            n=new(v,parents,origins,actions,alive,pres,backtrace())
-            isempty(origins) && (action_queues[n] = [])
+        function Signal(v, parents, actions, alive, pres, name)
+            roots = getroots(parents)
+            node_count[] += 1
+            n=new(v,parents,roots,actions,alive,pres,name,backtrace())
+            isempty(roots) && (action_queues[n] = [])
             nodes[n] = nothing
             finalizer(n, log_gc)
             n
@@ -45,18 +53,17 @@ else
     end
 end
 
-function getorigins(parents)
-    origins = Dict{Signal, Bool}()
+allroots(maybe_root_node) =
+    isempty(maybe_root_node.roots) ? [maybe_root_node] : maybe_root_node.roots
+
+function getroots(parents)
+    roots = Dict{Signal, Bool}()
     for parent in parents
-        if isempty(parent.origins)
-            origins[parent] = true
-        else
-            for origin in parent.origins
-                origins[origin] = true
-            end
+        for root in allroots(parent)
+            roots[root] = true
         end
     end
-    return (keys(origins)...)
+    return (keys(roots)...)
 end
 
 
@@ -73,17 +80,26 @@ immutable Action
     recipient::WeakRef
     f::Function
 end
-isrequired(a::Action) =
-    any(map(n->n.alive, a.recipient.value.parents)) &&
-    a.recipient.value != nothing &&
-    a.recipient.value.alive
+
+#In general, one action per node makes sense now, I think
+#so you just add the recipient to the queue and not the Action.
+nodes_in_queue(nodes, queue) = filter(n->n in nodes)
+
+isrequired(a::Action, processed_nodes::Dict{Signal, Bool}) = begin
+    node = a.recipient.value
+    haskey(processed_nodes,node) && node.alive && return true #needed for fps node timers
+    any(map(n->haskey(processed_nodes, n)||haskey(processed_nodes, value(n)) #value(n) is for flatten
+            , node.parents)) &&
+        node != nothing &&
+        node.alive
+end
 
 const action_queues = Dict{Signal, Vector{Action}}()
 
-Signal{T}(x::T, parents=()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}())
-Signal{T}(::Type{T}, x, parents=()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}())
+Signal{T}(x::T, parents=(); name=auto_name()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+Signal{T}(::Type{T}, x, parents=(); name=auto_name()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
 # A signal of types
-Signal(t::Type) = Signal(Type, t)
+Signal(t::Type; name=auto_name()) = Signal(Type, t; name=name)
 
 # preserve/unpreserve nodes from gc
 """
@@ -119,7 +135,8 @@ function unpreserve(x::Signal)
 end
 
 Base.show(io::IO, n::Signal) =
-    write(io, "Signal{$(eltype(n))}($(n.value), nactions=$(length(n.actions))$(n.alive ? "" : ", closed"))")
+    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value), nactions=$(length(n.actions))$(n.alive ? "" : ", closed"))")
+
 
 value(n::Signal) = n.value
 value(::Void) = false
@@ -128,20 +145,24 @@ eltype{T}(::Type{Signal{T}}) = T
 
 ##### Connections #####
 
-function add_action!(f, recipient, origin=nothing)
+function add_action!(f, recipient, root=nothing)
     a = Action(WeakRef(recipient), f)
-    if origin == nothing
-        for origin in recipient.origins #empty for inputs to graph, i.e. nodes that are push!ed to, including time nodes like fps
-            push!(action_queues[origin], a)
-        end
-    else
-        push!(action_queues[origin], a)
+    roots = root == nothing ? recipient.roots : [root]
+    for aroot in roots #empty for inputs to graph, i.e. nodes that are push!ed to, including time nodes like fps
+        push!(action_queues[aroot], a)
+        # action_queue_nodes[a.recipient] = true
     end
     a
 end
 
-function remove_action!(f, node, recipient)
-    node.actions = filter(a -> a.f != f, node.actions)
+function remove_actions!(recipient, root=nothing)
+    roots = root == nothing ? recipient.roots : [root]
+    for root in roots
+        filter!(action_queues[root]) do action
+            action.recipient.value != recipient
+        end
+    end
+    nothing
 end
 
 function close(n::Signal, warn_nonleaf=true)
@@ -171,9 +192,13 @@ function send_value!(node::Signal, x, timestep)
 end
 send_value!(wr::WeakRef, x, timestep) = wr.value != nothing && send_value!(wr.value, x, timestep)
 
-do_action(a::Action, timestep) =
-    isrequired(a) && a.f(a.recipient.value, timestep)
-
+do_action(a::Action, timestep, processed_nodes::Dict{Signal, Bool}) = begin
+    if isrequired(a, processed_nodes)
+        a.f(a.recipient.value, timestep)
+    else
+        a.recipient.value.alive = false
+    end
+end
 # If any actions have been gc'd, remove them
 cleanup_actions(node::Signal) =
     node.actions = filter(isrequired, node.actions)
@@ -204,7 +229,7 @@ queued updates are done processing.
 
 The third optional argument is a callback to be called in case the update
 ends in an error. The callback receives 3 arguments: the signal, the value,
-and a `CapturedException` with the fields `ex` which is the original exception
+and a `CapturedException` with the fields `ex` which is the rootal exception
 object, and `processed_bt` which is the backtrace of the exception.
 
 The default error callback will print the error and backtrace to STDERR.
@@ -230,7 +255,7 @@ a Signal.
 post_empty() = put!(_messages, EmptyMessage())
 
 # remove messages from the channel and propagate them
-global run, stop
+global run, stop, isstopped
 
 let timestep::Int = 0, stop_runner::Bool = false
 
@@ -239,6 +264,8 @@ let timestep::Int = 0, stop_runner::Bool = false
         stop_runner = true
         post_empty() # make sure it's not waiting on an empty message list
     end
+
+    isstopped() = stop_runner
 
     Base.shift!(od::OrderedDict) = begin
         firstkey = od |> keys |> first
@@ -250,16 +277,24 @@ let timestep::Int = 0, stop_runner::Bool = false
     Processes `n` messages from the Reactive event queue.
     """
     function run(n::Int)
+        processed_nodes = Dict{Signal, Bool}()
         for i=1:n
             timestep += 1
             let message = take!(_messages)
                 isa(message, EmptyMessage) && continue # ignore emtpy messages
                 try
                     send_value!(message.node, message.value, timestep)
-                    for action in action_queues[message.node]
-                        do_action(action, timestep)
+                    # @show "-----------" message.node.value
+                    empty!(processed_nodes)
+                    processed_nodes[message.node.value] = true
+                    for action in action_queues[message.node.value]
+                        node = action.recipient.value
+                        # @show node node.parents processed_nodes
+                        do_action(action, timestep, processed_nodes)
+                        # @show node.alive
+                        node.alive && (processed_nodes[node] = true)
                     end
-                    foreach(action_queues[message.node]) do action
+                    foreach(action_queues[message.node.value]) do action
                         action.recipient.value.alive = true
                     end
                 catch err
