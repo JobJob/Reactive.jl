@@ -22,7 +22,7 @@ facts("Basic checks") do
         step()
         @fact value(b) --> 1
         # InexactError to be precise
-        push!(a, 2.1, (n,x,err) -> @fact n --> a)
+        push!(a, 2.1, (n,x,error_node,err) -> @fact n --> a)
         step()
 
         @fact value(b) --> 1
@@ -75,6 +75,7 @@ facts("Basic checks") do
     context("foldp") do
 
         ## foldl over time
+        gc()
         push!(a, 0)
         step()
         f = foldp(+, 0, a)
@@ -241,5 +242,23 @@ facts("Basic checks") do
 
         step()
         @fact value(y) --> 1
+    end
+
+
+    context("bindind") do
+        x = Signal(0)
+        y = Signal(0)
+        bind!(y,x,false)
+
+        push!(x,1000)
+        step()
+
+        @fact value(y) --> 1000
+
+        unbind!(y,x,false)
+        push!(x,0)
+        step()
+
+        @fact value(y) --> 1000
     end
 end

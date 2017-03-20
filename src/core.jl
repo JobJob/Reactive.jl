@@ -1,5 +1,7 @@
 import Base: push!, eltype, close
-export Signal, push!, value, preserve, unpreserve, close
+export Signal, push!, value, preserve, unpreserve, close, rename!
+
+using DataStructures
 
 using DataStructures
 
@@ -9,10 +11,6 @@ const debug_memory = false # Set this to true to debug gc of nodes
 
 const nodes = WeakKeyDict()
 const io_lock = ReentrantLock()
-const node_count = Ref(1) #1 since auto_name gets called before count is incremented
-
-auto_name() = string(node_count[])
-
 
 if !debug_memory
     type Signal{T}
@@ -25,7 +23,6 @@ if !debug_memory
         name::String
         function Signal(v, parents, actions, alive, pres, name)
             roots = getroots(parents)
-            node_count[] += 1
             n=new(v,parents,roots,actions,alive,pres,name)
             isempty(roots) && (action_queues[n] = [])
             n
@@ -43,7 +40,6 @@ else
         bt
         function Signal(v, parents, actions, alive, pres, name)
             roots = getroots(parents)
-            node_count[] += 1
             n=new(v,parents,roots,actions,alive,pres,name,backtrace())
             isempty(roots) && (action_queues[n] = [])
             nodes[n] = nothing
@@ -81,6 +77,33 @@ immutable Action
     f::Function
 end
 
+const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
+function auto_name!(name, parents...)
+    parents_str = join(map(s->s.name, parents), ", ")
+    isempty(parents_str) || (name *= "($parents_str)")
+    node_count[name] += 1
+    countstr = node_count[name] > 1 ? "-$(node_count[name])" : ""
+    "$name$countstr"
+end
+
+"""
+`rename!(s::Signal, name::String)`
+
+Change a Signal's name
+"""
+function rename!(s::Signal, name::String)
+    s.name = name
+end
+
+const action_queue = Queue(Tuple{Signal, Action})
+
+isrequired(a::Action) = (a.recipient.value != nothing) && a.recipient.value.alive
+
+Signal{T}(x::T, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+# A signal of types
+Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
+
 #In general, one action per node makes sense now, I think
 #so you just add the recipient to the queue and not the Action.
 nodes_in_queue(nodes, queue) = filter(n->n in nodes)
@@ -95,11 +118,6 @@ isrequired(a::Action, processed_nodes::Dict{Signal, Bool}) = begin
 end
 
 const action_queues = Dict{Signal, Vector{Action}}()
-
-Signal{T}(x::T, parents=(); name=auto_name()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
-Signal{T}(::Type{T}, x, parents=(); name=auto_name()) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
-# A signal of types
-Signal(t::Type; name=auto_name()) = Signal(Type, t; name=name)
 
 # preserve/unpreserve nodes from gc
 """
@@ -136,7 +154,6 @@ end
 
 Base.show(io::IO, n::Signal) =
     write(io, "$(n.name): Signal{$(eltype(n))}($(n.value), nactions=$(length(n.actions))$(n.alive ? "" : ", closed"))")
-
 
 value(n::Signal) = n.value
 value(::Void) = false
@@ -207,18 +224,15 @@ cleanup_actions(node::Signal) =
 ##### Messaging #####
 
 const CHANNEL_SIZE = 1024
-abstract AbstractMessage
-immutable StopMessage <: AbstractMessage
-end
-immutable EmptyMessage <: AbstractMessage
-end
-immutable Message <: AbstractMessage
+
+immutable Message
     node
     value
     onerror::Function
 end
+
 # Global channel for signal updates
-const _messages = Channel{AbstractMessage}(CHANNEL_SIZE)
+const _messages = Channel{Nullable{Message}}(CHANNEL_SIZE)
 
 
 """
@@ -242,87 +256,74 @@ function _push!(n, x, onerror=print_error)
         warn("Message queue is full. Ordering may be incorrect.")
         @async put!(_messages, Message(n, x, onerror))
     else
-        put!(_messages, Message(WeakRef(n), x, onerror))
+        put!(_messages, Message(n, x, onerror))
     end
     nothing
 end
 _push!(::Void, x, onerror=print_error) = nothing
 
+
+const timestep = Ref{Int}(0)
+
+function break_loop()
+    put!(_messages, Nullable{Message}())
+end
+
+function stop()
+    run_till_now() # process all remaining events
+    break_loop()
+end
+
+Base.shift!(od::OrderedDict) = begin
+    firstkey = od |> keys |> first
+    res = od[firstkey]; delete!(od, firstkey)
+    firstkey=>res
+end
+
 """
-Convenience function to notify the Reactive event loop without pushing to
-a Signal.
+Processes `n` messages from the Reactive event queue.
 """
-post_empty() = put!(_messages, EmptyMessage())
+function run(n::Int=typemax(Int))
+    processed_nodes = Dict{Signal, Bool}()
+    ts = timestep[]
+    for i=1:n
+        ts += 1
+        message = take!(_messages)
+        isnull(message) && break # ignore emtpy messages
 
-# remove messages from the channel and propagate them
-global run, stop, isstopped
-
-let timestep::Int = 0, stop_runner::Bool = false
-
-    function stop()
-        run_till_now() # process all remaining events
-        stop_runner = true
-        post_empty() # make sure it's not waiting on an empty message list
-    end
-
-    isstopped() = stop_runner
-
-    Base.shift!(od::OrderedDict) = begin
-        firstkey = od |> keys |> first
-        res = od[firstkey]; delete!(od, firstkey)
-        firstkey=>res
-    end
-
-    """
-    Processes `n` messages from the Reactive event queue.
-    """
-    function run(n::Int)
-        processed_nodes = Dict{Signal, Bool}()
-        for i=1:n
-            timestep += 1
-            let message = take!(_messages)
-                isa(message, EmptyMessage) && continue # ignore emtpy messages
-                try
-                    send_value!(message.node, message.value, timestep)
-                    # @show "-----------" message.node.value
-                    empty!(processed_nodes)
-                    processed_nodes[message.node.value] = true
-                    for action in action_queues[message.node.value]
-                        node = action.recipient.value
-                        # @show node node.parents processed_nodes
-                        do_action(action, timestep, processed_nodes)
-                        # @show node.alive
-                        node.alive && (processed_nodes[node] = true)
-                    end
-                    foreach(action_queues[message.node.value]) do action
-                        action.recipient.value.alive = true
-                    end
-                catch err
-                    if isa(err, InterruptException)
-                        println("Reactive event loop was inturrupted.")
-                        rethrow()
-                    else
-                        bt = catch_backtrace()
-                        message.onerror(message.node, message.value, CapturedException(err, bt))
-                    end
-                end
+        msgval = get(message)
+        node = msgval.node
+        try
+            send_value!(msgval.node, msgval.value, ts)
+            # @show "-----------" msgval.node.value
+            empty!(processed_nodes)
+            processed_nodes[msgval.node] = true
+            for action in action_queues[msgval.node]
+                node = action.recipient.value
+                # @show node node.parents processed_nodes
+                do_action(action, ts, processed_nodes)
+                # @show node.alive
+                node.alive && (processed_nodes[node] = true)
             end
-        end
-        return
-    end
-    """
-    Processes messages as long as `stop` isn't called.
-    """
-    function run()
-        stop_runner = false
-        while !stop_runner
-            run(1)
+            foreach(action_queues[msgval.node]) do action
+                action.recipient.value.alive = true
+            end
+        catch err
+            if isa(err, InterruptException)
+                println("Reactive event loop was inturrupted.")
+                rethrow()
+            else
+                bt = catch_backtrace()
+                msgval.onerror(msgval.node, msgval.value, node, CapturedException(err, bt))
+            end
+        finally
+            timestep[] = ts
         end
     end
 end
 
 # Default error handler function
-function print_error(node, value, ex)
+function print_error(node, value, error_node, ex)
     lock(io_lock)
     io = STDERR
     println(io, "Failed to push!")
@@ -333,6 +334,8 @@ function print_error(node, value, ex)
     print(io, "    ")
     show(io, node)
     println(io)
+    println(io)
+    println(io, "error at node: $error_node")
     showerror(io, ex)
     println(io)
     unlock(io_lock)

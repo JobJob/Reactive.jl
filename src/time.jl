@@ -8,12 +8,12 @@ Throttle a signal to update at most once every dt seconds. By default, the throt
 This behavior can be changed by the `f`, `init` and `reinit` arguments. The `init` and `f` functions are similar to `init` and `f` in `foldp`. `reinit` is called when a new throttle time window opens to reinitialize the initial value for accumulation, it gets one argument, the previous accumulated value.
 
 For example
-    y = throttle(0.2, x, push!, Int[], a->Int[])
+    `y = throttle(0.2, x, push!, Int[], _->Int[])`
 will create vectors of updates to the integer signal `x` which occur within 0.2 second time windows.
 
 """
-function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init))
-    output = Signal(typ, init, (node,))
+function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init), name=auto_name!("throttle $(dt)s", node))
+    output = Signal(typ, init, (node,); name=name)
     #the buck starts here, child nodes need to activate on push to this node...
     action_queues[output] = []
     output.roots = ()
@@ -49,8 +49,8 @@ end
 
 A signal that updates every `dt` seconds to the current timestamp. Consider using `fpswhen` or `fps` before using `every`.
 """
-function every(dt)
-    n = Signal(time(), ())
+function every(dt; name=auto_name!("every $dt secs"))
+    n = Signal(time(), (); name=name)
     every_connect(dt, n)
     n
 end
@@ -67,7 +67,7 @@ end
 
 returns a signal which when `switch` signal is true, updates `rate` times every second. If `rate` is not possible to attain because of slowness in computing dependent signal values, the signal will self adjust to provide the best possible rate.
 """
-function fpswhen(switch, rate; name=auto_name())
+function fpswhen(switch, rate; name=auto_name!("$rate fpswhen", switch))
     n = Signal(Float64, 0.0, (switch,); name=name)
     #fpswhen has parents so by default won't have an action queue
     #but it gets pushed to in timer, so it has to
@@ -109,4 +109,4 @@ end
 
 Same as `fpswhen(Input(true), rate)`
 """
-fps(rate) = fpswhen(Signal(Bool, true, ()), rate)
+fps(rate; name="$rate fps") = fpswhen(Signal(Bool, true, (); name="fps true"), rate; name=name)
