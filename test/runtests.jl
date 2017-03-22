@@ -9,6 +9,7 @@ end
 
 include("basics.jl")
 #include("gc.jl")
+include("node_order.jl")
 include("call_count.jl")
 include("flatten.jl")
 include("time.jl")
