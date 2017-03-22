@@ -57,7 +57,7 @@ end
 
 function every_connect(dt, output)
     outputref = WeakRef(output)
-    timer = Timer(x -> _push!(outputref.value, time(), ()->close(timer)), dt, dt)
+    timer = Timer(x -> push!(outputref.value, time(), ()->close(timer)), dt, dt)
     finalizer(output, _->close(timer))
     output
 end
@@ -81,7 +81,7 @@ function setup_next_tick(outputref, switchref, dt, wait_dt)
     if value(switchref.value)
         Timer(t -> begin
             if value(switchref.value)
-                _push!(outputref.value, dt)
+                push!(outputref.value, dt)
             end
        end, wait_dt)
     end

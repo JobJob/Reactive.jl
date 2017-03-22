@@ -1,7 +1,5 @@
 import Base: push!, eltype, close
-export Signal, push!, value, preserve, unpreserve, close, rename!
-
-using DataStructures
+export Signal, push!, value, preserve, unpreserve, close, rename!, run_async
 
 using DataStructures
 
@@ -234,6 +232,9 @@ end
 # Global channel for signal updates
 const _messages = Channel{Nullable{Message}}(CHANNEL_SIZE)
 
+#run in asynchronous mode by default
+const async_mode = Ref(true)
+run_async(async::Bool) = async_mode[] = async
 
 """
 `push!(signal, value, onerror=Reactive.print_error)`
@@ -248,9 +249,16 @@ object, and `processed_bt` which is the backtrace of the exception.
 
 The default error callback will print the error and backtrace to STDERR.
 """
-Base.push!(n::Signal, x, onerror=print_error) = _push!(n, x, onerror)
+@inline Base.push!(n::Signal, x, onerror=print_error) = begin
+    if async_mode[]
+        async_push!(n, x, onerror)
+    else
+        timestep[] += 1
+        run_push(timestep[], n, x, onerror)
+    end
+end
 
-function _push!(n, x, onerror=print_error)
+function async_push!(n, x, onerror=print_error)
     taken = Base.n_avail(_messages)
     if taken >= CHANNEL_SIZE
         warn("Message queue is full. Ordering may be incorrect.")
@@ -260,7 +268,7 @@ function _push!(n, x, onerror=print_error)
     end
     nothing
 end
-_push!(::Void, x, onerror=print_error) = nothing
+async_push!(::Void, x, onerror=print_error) = nothing
 
 
 const timestep = Ref{Int}(0)
@@ -280,11 +288,11 @@ Base.shift!(od::OrderedDict) = begin
     firstkey=>res
 end
 
+const processed_nodes = Dict{Signal, Bool}()
 """
 Processes `n` messages from the Reactive event queue.
 """
 function run(n::Int=typemax(Int))
-    processed_nodes = Dict{Signal, Bool}()
     ts = timestep[]
     for i=1:n
         ts += 1
@@ -292,33 +300,38 @@ function run(n::Int=typemax(Int))
         isnull(message) && break # ignore emtpy messages
 
         msgval = get(message)
-        node = msgval.node
-        try
-            send_value!(msgval.node, msgval.value, ts)
-            # @show "-----------" msgval.node.value
-            empty!(processed_nodes)
-            processed_nodes[msgval.node] = true
-            for action in action_queues[msgval.node]
-                node = action.recipient.value
-                # @show node node.parents processed_nodes
-                do_action(action, ts, processed_nodes)
-                # @show node.alive
-                node.alive && (processed_nodes[node] = true)
-            end
-            foreach(action_queues[msgval.node]) do action
-                action.recipient.value.alive = true
-            end
-        catch err
-            if isa(err, InterruptException)
-                println("Reactive event loop was inturrupted.")
-                rethrow()
-            else
-                bt = catch_backtrace()
-                msgval.onerror(msgval.node, msgval.value, node, CapturedException(err, bt))
-            end
-        finally
-            timestep[] = ts
+        run_push(ts, msgval.node, msgval.value, msgval.onerror)
+    end
+end
+
+function run_push(ts, rootnode, value, onerror)
+    node = rootnode
+    try
+        send_value!(node, value, ts)
+        # @show "-----------" node.value
+        empty!(processed_nodes)
+        processed_nodes[node] = true
+        for action in action_queues[node]
+            node = action.recipient.value
+            # @show node node.parents processed_nodes
+            do_action(action, ts, processed_nodes)
+            # @show node.alive
+            node.alive && (processed_nodes[node] = true)
         end
+        node = rootnode
+        foreach(action_queues[node]) do action
+            action.recipient.value.alive = true
+        end
+    catch err
+        if isa(err, InterruptException)
+            println("Reactive event loop was inturrupted.")
+            rethrow()
+        else
+            bt = catch_backtrace()
+            onerror(node, value, node, CapturedException(err, bt))
+        end
+    finally
+        timestep[] = ts
     end
 end
 
