@@ -95,7 +95,6 @@ end
 
 const action_queue = Queue(Tuple{Signal, Action})
 
-isrequired(a::Action) = (a.recipient.value != nothing) && a.recipient.value.alive
 
 Signal{T}(x::T, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
 Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
@@ -105,6 +104,8 @@ Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 #In general, one action per node makes sense now, I think
 #so you just add the recipient to the queue and not the Action.
 nodes_in_queue(nodes, queue) = filter(n->n in nodes)
+
+isrequired(a::Action) = (a.recipient.value != nothing) && a.recipient.value.alive
 
 isrequired(a::Action, processed_nodes::Dict{Signal, Bool}) = begin
     node = a.recipient.value
@@ -162,12 +163,25 @@ eltype{T}(::Type{Signal{T}}) = T
 
 function add_action!(f, recipient, root=nothing)
     a = Action(WeakRef(recipient), f)
-    roots = root == nothing ? recipient.roots : [root]
-    for aroot in roots #empty for inputs to graph, i.e. nodes that are push!ed to, including time nodes like fps
+    roots = root == nothing ? allroots(recipient) : [root]
+    for aroot in roots
         push!(action_queues[aroot], a)
         # action_queue_nodes[a.recipient] = true
     end
     a
+end
+
+"""
+Removes `action` from the action_queues of all roots of `node`
+"""
+function remove_action!(node, action, root=nothing)
+    roots = root == nothing ? allroots(node) : [root]
+    for root in roots
+        filter!(action_queues[root]) do queue_action
+            queue_action != action
+        end
+    end
+    nothing
 end
 
 function remove_actions!(recipient, root=nothing)
@@ -234,7 +248,7 @@ const _messages = Channel{Nullable{Message}}(CHANNEL_SIZE)
 
 #run in asynchronous mode by default
 const async_mode = Ref(true)
-run_async(async::Bool) = async_mode[] = async
+run_async(async::Bool) = (async_mode[] = async)
 
 """
 `push!(signal, value, onerror=Reactive.print_error)`
@@ -253,8 +267,7 @@ The default error callback will print the error and backtrace to STDERR.
     if async_mode[]
         async_push!(n, x, onerror)
     else
-        timestep[] += 1
-        run_push(timestep[], n, x, onerror)
+        run_push(timestep[]+1, n, x, onerror)
     end
 end
 
@@ -275,6 +288,7 @@ const timestep = Ref{Int}(0)
 
 function break_loop()
     put!(_messages, Nullable{Message}())
+    yield()
 end
 
 function stop()
@@ -308,7 +322,6 @@ function run_push(ts, rootnode, value, onerror)
     node = rootnode
     try
         send_value!(node, value, ts)
-        # @show "-----------" node.value
         empty!(processed_nodes)
         processed_nodes[node] = true
         for action in action_queues[node]

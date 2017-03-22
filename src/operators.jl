@@ -36,7 +36,7 @@ function connect_map(f, output, inputs...)
     let prev_timestep = 0
         add_action!(output) do output, timestep
             prev_timestep == timestep && for i in 1:20
-                println("asdklfa;lkdsjfa;sdkflas;dlfkjas;dlfkjasdf bugger!")
+                println(@__FILE__, ":", @__LINE__, "- prev timestep shouldn't equal current timestep: $timestep, in connect_map output-node: $output, inputs: $inputs")
             end
             result = f(map(value, inputs)...)
             send_value!(output, result, timestep)
@@ -366,9 +366,10 @@ function bind!(a::Signal, b::Signal, twoway=true)
 
     let current_timestep = 0
         action = add_action!(a) do a, timestep
+            # @show a current_timestep timestep
             if current_timestep != timestep
                 current_timestep = timestep
-                send_value!(a, value(b), timestep)
+                send_value!(b, value(a), timestep)
             end
         end
         _bindings[a=>b] = action
@@ -390,7 +391,7 @@ function unbind!(a::Signal, b::Signal, twoway=true)
     end
 
     action = _bindings[a=>b]
-    b.actions = filter(x->x!=action, b.actions)
+    remove_action!(a, action)
     delete!(_bindings, a=>b)
 
     if twoway

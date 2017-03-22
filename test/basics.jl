@@ -245,17 +245,17 @@ facts("Basic checks") do
     end
 
 
-    context("bindind") do
+    context("bind") do
         x = Signal(0)
         y = Signal(0)
-        bind!(y,x,false)
+        bind!(x,y,false)
 
         push!(x,1000)
         step()
 
         @fact value(y) --> 1000
 
-        unbind!(y,x,false)
+        unbind!(x,y,false)
         push!(x,0)
         step()
 
