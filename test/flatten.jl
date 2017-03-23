@@ -18,7 +18,6 @@ facts("Flatten") do
     end
 
     context("Initial update count") do
-
         @fact value(cnt) --> 0
     end
 

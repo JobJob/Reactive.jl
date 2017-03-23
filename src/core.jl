@@ -16,13 +16,15 @@ if !debug_memory
         parents::Tuple
         roots::Tuple
         actions::Vector
+        active::Bool
         alive::Bool
         preservers::Dict
         name::String
         function Signal(v, parents, actions, alive, pres, name)
             roots = getroots(parents)
-            n=new(v,parents,roots,actions,alive,pres,name)
-            isempty(roots) && (action_queues[n] = [])
+            n=new(v, parents, roots, actions, false, alive, pres, name)
+            isempty(roots) && (action_queues[n] = []) #root node
+            finalizer(n, remove_actions!)
             n
         end
     end
@@ -32,14 +34,15 @@ else
         parents::Tuple
         roots::Tuple
         actions::Vector
+        active::Bool
         alive::Bool
         preservers::Dict
         name::String
         bt
         function Signal(v, parents, actions, alive, pres, name)
             roots = getroots(parents)
-            n=new(v,parents,roots,actions,alive,pres,name,backtrace())
-            isempty(roots) && (action_queues[n] = [])
+            n=new(v,parents,roots,actions,false,alive,pres,name,backtrace())
+            isempty(roots) && (action_queues[n] = []) #root node
             nodes[n] = nothing
             finalizer(n, log_gc)
             n
@@ -47,6 +50,13 @@ else
     end
 end
 
+"""
+Nodes are roots if they have an empty `node.roots`. We choose to set it as
+empty, rather than having `node.roots == (node,)` to avoid an unecessary
+self-reference - which would require working around problems with printing, saving
+to disk etc. Instead, wherever we need the roots of a `node` to include the
+root node itself we call `allroots(node)`.
+"""
 allroots(maybe_root_node) =
     isempty(maybe_root_node.roots) ? [maybe_root_node] : maybe_root_node.roots
 
@@ -93,11 +103,10 @@ function rename!(s::Signal, name::String)
     s.name = name
 end
 
-const action_queue = Queue(Tuple{Signal, Action})
-
-
-Signal{T}(x::T, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
-Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) = Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
+    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
+    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
 # A signal of types
 Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 
@@ -105,15 +114,21 @@ Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 #so you just add the recipient to the queue and not the Action.
 nodes_in_queue(nodes, queue) = filter(n->n in nodes)
 
-isrequired(a::Action) = (a.recipient.value != nothing) && a.recipient.value.alive
-
-isrequired(a::Action, processed_nodes::Dict{Signal, Bool}) = begin
+isrequired(a::Action) = begin
     node = a.recipient.value
-    haskey(processed_nodes,node) && node.alive && return true #needed for fps node timers
-    any(map(n->haskey(processed_nodes, n)||haskey(processed_nodes, value(n)) #value(n) is for flatten
-            , node.parents)) &&
-        node != nothing &&
-        node.alive
+    if node == nothing || !node.alive
+        info("isrequired($a) had a.recipient.value == nothing")
+        return false #happens with gc sometimes
+    end
+    node.active && return true #needed for fps node timers
+    for p in node.parents
+        p.active && return true
+        # for flatten nodes, their parent is a Signal{Signal}
+        # their action isrequired if the parent is active (like other sigs: handled above)
+        # or if the current Signal of the parent is active:
+        (eltype(p) <: Signal) && value(p).active && return true
+    end
+    return false
 end
 
 const action_queues = Dict{Signal, Vector{Action}}()
@@ -184,11 +199,11 @@ function remove_action!(node, action, root=nothing)
     nothing
 end
 
-function remove_actions!(recipient, root=nothing)
-    roots = root == nothing ? recipient.roots : [root]
+function remove_actions!(node, root=nothing)
+    roots = root == nothing ? allroots(node) : [root]
     for root in roots
         filter!(action_queues[root]) do action
-            action.recipient.value != recipient
+            action.recipient.value != node
         end
     end
     nothing
@@ -199,8 +214,9 @@ function close(n::Signal, warn_nonleaf=true)
     finalize(n) # stop timer etc.
     n.alive = false
     if !isempty(n.actions)
-        any(map(isrequired, n.actions)) && warn_nonleaf &&
-            warn("closing a non-leaf node is not a good idea")
+        # alarmist - see https://github.com/JuliaGizmos/Reactive.jl/issues/104
+        # any(map(isrequired, n.actions)) && warn_nonleaf &&
+        #     warn("closing a non-leaf node is not a good idea")
         empty!(n.actions)
     end
 
@@ -212,25 +228,16 @@ end
 function send_value!(node::Signal, x, timestep)
     # Dead node?
     !node.alive && return
-
-    # Set the value and do actions
     node.value = x
-    # for action in node.actions
-    #     do_action(action, timestep)
-    # end
 end
 send_value!(wr::WeakRef, x, timestep) = wr.value != nothing && send_value!(wr.value, x, timestep)
 
-do_action(a::Action, timestep, processed_nodes::Dict{Signal, Bool}) = begin
-    if isrequired(a, processed_nodes)
-        a.f(a.recipient.value, timestep)
-    else
-        a.recipient.value.alive = false
-    end
+do_action(a::Action, timestep) = begin
+    a.f(a.recipient.value, timestep)
 end
 # If any actions have been gc'd, remove them
 cleanup_actions(node::Signal) =
-    node.actions = filter(isrequired, node.actions)
+    (node.actions = filter(isrequired, node.actions))
 
 
 ##### Messaging #####
@@ -296,13 +303,6 @@ function stop()
     break_loop()
 end
 
-Base.shift!(od::OrderedDict) = begin
-    firstkey = od |> keys |> first
-    res = od[firstkey]; delete!(od, firstkey)
-    firstkey=>res
-end
-
-const processed_nodes = Dict{Signal, Bool}()
 """
 Processes `n` messages from the Reactive event queue.
 """
@@ -318,30 +318,32 @@ function run(n::Int=typemax(Int))
     end
 end
 
-function run_push(ts, rootnode, value, onerror)
+function run_push(ts, rootnode, val, onerror)
     node = rootnode
     try
-        send_value!(node, value, ts)
-        empty!(processed_nodes)
-        processed_nodes[node] = true
+        send_value!(node, val, ts)
+        node.active = true
         for action in action_queues[node]
             node = action.recipient.value
-            # @show node node.parents processed_nodes
-            do_action(action, ts, processed_nodes)
-            # @show node.alive
-            node.alive && (processed_nodes[node] = true)
+            if isrequired(action)
+                action.recipient.value.active = true
+                do_action(action, ts)
+            else
+                action.recipient.value.active = false
+            end
         end
         node = rootnode
+        #reset active status for actions
         foreach(action_queues[node]) do action
-            action.recipient.value.alive = true
+            action.recipient.value.active = false
         end
     catch err
         if isa(err, InterruptException)
-            println("Reactive event loop was inturrupted.")
+            info("Reactive event loop was inturrupted.")
             rethrow()
         else
             bt = catch_backtrace()
-            onerror(node, value, node, CapturedException(err, bt))
+            onerror(rootnode, val, node, CapturedException(err, bt))
         end
     finally
         timestep[] = ts
@@ -349,12 +351,12 @@ function run_push(ts, rootnode, value, onerror)
 end
 
 # Default error handler function
-function print_error(node, value, error_node, ex)
+function print_error(node, val, error_node, ex)
     lock(io_lock)
     io = STDERR
     println(io, "Failed to push!")
     print(io, "    ")
-    show(io, value)
+    show(io, val)
     println(io)
     println(io, "to node")
     print(io, "    ")

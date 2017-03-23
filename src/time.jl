@@ -93,8 +93,8 @@ function fpswhen_connect(rate, switch, output)
         outputref = WeakRef(output)
         switchref = WeakRef(switch)
 
-        for action_queue in (allroots(switch)..., output)
-            add_action!(output, action_queue) do output, timestep
+        for node in (allroots(switch)..., output)
+            add_action!(output, node) do output, timestep
                 start_time = time()
                 setup_next_tick(outputref, switchref, start_time-prev_time, dt)
                 prev_time = start_time

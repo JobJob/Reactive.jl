@@ -72,7 +72,7 @@ function connect_filter(f, default, output, input)
         if f(val)
             send_value!(output, val, timestep)
         else
-            output.alive = false
+            output.active = false
         end
     end
 end
@@ -94,10 +94,10 @@ end
 function connect_filterwhen(output, predicate, input)
     add_action!(output) do output, timestep
         if value(predicate)
-            output.alive = true
+            output.active = true
             send_value!(output, value(input), timestep)
         else
-            output.alive = false
+            output.active = false
         end
     end
 end
@@ -179,7 +179,7 @@ function getlastactive(root, node)
     lastactive = last(node.parents) # defaults to last signal parent
     while i > 0
         action_node = actionq[i].recipient.value
-        if action_node.alive && action_node in node.parents
+        if action_node.active && action_node in node.parents
             lastactive = action_node
             break
         end
@@ -251,7 +251,7 @@ function connect_droprepeats(output, input)
                 send_value!(output, value(input), timestep)
                 prev_value = value(input)
             else
-                output.alive = false
+                output.active = false
             end
         end
     end
