@@ -33,14 +33,9 @@ function map(f, input::Signal, inputsrest::Signal...;
 end
 
 function connect_map(f, output, inputs...)
-    let prev_timestep = 0
-        add_action!(output) do output, timestep
-            prev_timestep == timestep && for i in 1:20
-                println(@__FILE__, ":", @__LINE__, "- prev timestep shouldn't equal current timestep: $timestep, in connect_map output-node: $output, inputs: $inputs")
-            end
-            result = f(map(value, inputs)...)
-            send_value!(output, result, timestep)
-            prev_timestep = timestep
+    let
+        add_action!(output) do output
+            send_value!(output, f(map(value, inputs)...))
         end
     end
 end
@@ -67,10 +62,10 @@ function filter{T}(f::Function, default, input::Signal{T}; name=auto_name!("filt
 end
 
 function connect_filter(f, default, output, input)
-    add_action!(output) do output, timestep
+    add_action!(output) do output
         val = value(input)
         if f(val)
-            send_value!(output, val, timestep)
+            send_value!(output, val)
         else
             output.active = false
         end
@@ -92,10 +87,10 @@ function filterwhen{T}(predicate::Signal{Bool}, default, input::Signal{T};
 end
 
 function connect_filterwhen(output, predicate, input)
-    add_action!(output) do output, timestep
+    add_action!(output) do output
         if value(predicate)
             output.active = true
-            send_value!(output, value(input), timestep)
+            send_value!(output, value(input))
         else
             output.active = false
         end
@@ -118,10 +113,10 @@ end
 
 function connect_foldp(f, v0, output, inputs)
     let acc = v0
-        add_action!(output) do output, timestep
+        add_action!(output) do output
             vals = map(value, inputs)
             acc = f(acc, vals...)
-            send_value!(output, acc, timestep)
+            send_value!(output, acc)
         end
     end
 end
@@ -138,8 +133,8 @@ function sampleon{T}(sampler, input::Signal{T}; name=auto_name!("sampleon", inpu
 end
 
 function connect_sampleon(output, sampler, input)
-    add_action!(output, sampler) do output, timestep
-        send_value!(output, value(input), timestep)
+    add_action!(output, sampler) do output
+        send_value!(output, value(input))
     end
 end
 
@@ -159,12 +154,11 @@ function merge(inputs...; name=auto_name!("merge", inputs...))
 end
 
 function connect_merge(output, inputs...)
-    let prev_timestep = 0
+    let
         for root in output.roots
-            # don't update twice in the same timestep
-            add_action!(output, root) do output, timestep
+            add_action!(output, root) do output
                 lastactive = getlastactive(root, output)
-                send_value!(output, value(lastactive), timestep)
+                send_value!(output, value(lastactive))
             end
         end
     end
@@ -202,8 +196,8 @@ end
 
 function connect_previous(output, input)
     let prev_value = value(input)
-        add_action!(output) do output, timestep
-            send_value!(output, prev_value, timestep)
+        add_action!(output) do output
+            send_value!(output, prev_value)
             prev_value = value(input)
         end
     end
@@ -227,7 +221,7 @@ function delay{T}(input::Signal{T}, default=value(input); name=auto_name!("delay
 end
 
 function connect_delay(output, input)
-    add_action!(output, input) do output, timestep
+    add_action!(output, input) do output
         push!(output, value(input))
     end
 end
@@ -246,9 +240,9 @@ end
 
 function connect_droprepeats(output, input)
     let prev_value = value(input)
-        add_action!(output) do output, timestep
+        add_action!(output) do output
             if prev_value != value(input)
-                send_value!(output, value(input), timestep)
+                send_value!(output, value(input))
                 prev_value = value(input)
             else
                 output.active = false
@@ -280,8 +274,8 @@ function connect_flatten(output, input)
             roots = allroots(current_node)
             for root in roots
                 #ensure updates when current_node gets pushed a new value
-                add_action!(output, root) do output, timestep
-                    send_value!(output, value(current_node), timestep)
+                add_action!(output, root) do output
+                    send_value!(output, value(current_node))
                 end
                 #ensure updates for subtree too, if action is already in queue
                 #remove it and readd it so it's deeper down. XXX I think that's
@@ -297,7 +291,7 @@ function connect_flatten(output, input)
         wire_flatten(current_node, Action[])
         inp_roots = allroots(input)
         for inp_root in inp_roots
-            add_action!(output, inp_root) do output, timestep
+            add_action!(output, inp_root) do output
                 #input gets pushed a new signal
                 #remove all children from action queues of prev signal
                 oldroots = allroots(current_node)
@@ -316,7 +310,7 @@ function connect_flatten(output, input)
                     end
                 end
                 current_node = value(input)
-                send_value!(output, value(current_node), timestep)
+                send_value!(output, value(current_node))
                 wire_flatten(current_node, subtree_actions)
             end
         end
@@ -364,13 +358,9 @@ To only bind updates from b to a, pass in a third argument as `false`
 """
 function bind!(a::Signal, b::Signal, twoway=true)
 
-    let current_timestep = 0
-        action = add_action!(a) do a, timestep
-            # @show a current_timestep timestep
-            if current_timestep != timestep
-                current_timestep = timestep
-                send_value!(b, value(a), timestep)
-            end
+    let
+        action = add_action!(a) do a
+            send_value!(b, value(a))
         end
         _bindings[a=>b] = action
     end

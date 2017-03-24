@@ -30,7 +30,7 @@ function throttle_connect(dt, output, input, f, init, reinit)
             prevpush = time()
         end
         for root in allroots(input)
-            add_action!(output, root) do output, timestep
+            add_action!(output, root) do output
                 collected = f(collected,  value(input))
                 elapsed = time() - prevpush
                 close(timer)
@@ -94,7 +94,7 @@ function fpswhen_connect(rate, switch, output)
         switchref = WeakRef(switch)
 
         for node in (allroots(switch)..., output)
-            add_action!(output, node) do output, timestep
+            add_action!(output, node) do output
                 start_time = time()
                 setup_next_tick(outputref, switchref, start_time-prev_time, dt)
                 prev_time = start_time

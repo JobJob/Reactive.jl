@@ -1,5 +1,5 @@
 import Base: push!, eltype, close
-export Signal, push!, value, preserve, unpreserve, close, rename!, run_async
+export Signal, push!, value, preserve, unpreserve, close, rename!
 
 using DataStructures
 
@@ -110,24 +110,16 @@ Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
 # A signal of types
 Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 
-#In general, one action per node makes sense now, I think
-#so you just add the recipient to the queue and not the Action.
-nodes_in_queue(nodes, queue) = filter(n->n in nodes)
-
-isrequired(a::Action) = begin
-    node = a.recipient.value
-    if node == nothing || !node.alive
-        info("isrequired($a) had a.recipient.value == nothing")
-        return false #happens with gc sometimes
-    end
-    node.active && return true #needed for fps node timers
+function isrequired(node::Signal)
     for p in node.parents
+        #any active parent and we are go
         p.active && return true
         # for flatten nodes, their parent is a Signal{Signal}
         # their action isrequired if the parent is active (like other sigs: handled above)
-        # or if the current Signal of the parent is active:
+        # or if the current Signal of the parent (value(p)) is active:
         (eltype(p) <: Signal) && value(p).active && return true
     end
+    node.active && return true #needed for fps node timers
     return false
 end
 
@@ -199,6 +191,9 @@ function remove_action!(node, action, root=nothing)
     nothing
 end
 
+"""
+remove the action associated with the node from all of it's roots' action_queues
+"""
 function remove_actions!(node, root=nothing)
     roots = root == nothing ? allroots(node) : [root]
     for root in roots
@@ -210,8 +205,7 @@ function remove_actions!(node, root=nothing)
 end
 
 function close(n::Signal, warn_nonleaf=true)
-    #XXX: make this work
-    finalize(n) # stop timer etc.
+    remove_actions!(n)
     n.alive = false
     if !isempty(n.actions)
         # alarmist - see https://github.com/JuliaGizmos/Reactive.jl/issues/104
@@ -223,22 +217,10 @@ function close(n::Signal, warn_nonleaf=true)
     for p in n.parents
         delete!(p.preservers, n)
     end
+    finalize(n) # stop timer etc.
 end
 
-function send_value!(node::Signal, x, timestep)
-    # Dead node?
-    !node.alive && return
-    node.value = x
-end
-send_value!(wr::WeakRef, x, timestep) = wr.value != nothing && send_value!(wr.value, x, timestep)
-
-do_action(a::Action, timestep) = begin
-    a.f(a.recipient.value, timestep)
-end
-# If any actions have been gc'd, remove them
-cleanup_actions(node::Signal) =
-    (node.actions = filter(isrequired, node.actions))
-
+send_value!(node::Signal, x) = (node.value = x)
 
 ##### Messaging #####
 
@@ -270,11 +252,11 @@ object, and `processed_bt` which is the backtrace of the exception.
 
 The default error callback will print the error and backtrace to STDERR.
 """
-@inline Base.push!(n::Signal, x, onerror=print_error) = begin
+function Base.push!(n::Signal, x, onerror=print_error)
     if async_mode[]
         async_push!(n, x, onerror)
     else
-        run_push(timestep[]+1, n, x, onerror)
+        run_push(n, x, onerror)
     end
 end
 
@@ -290,9 +272,6 @@ function async_push!(n, x, onerror=print_error)
 end
 async_push!(::Void, x, onerror=print_error) = nothing
 
-
-const timestep = Ref{Int}(0)
-
 function break_loop()
     put!(_messages, Nullable{Message}())
     yield()
@@ -307,34 +286,29 @@ end
 Processes `n` messages from the Reactive event queue.
 """
 function run(n::Int=typemax(Int))
-    ts = timestep[]
     for i=1:n
-        ts += 1
         message = take!(_messages)
         isnull(message) && break # ignore emtpy messages
 
         msgval = get(message)
-        run_push(ts, msgval.node, msgval.value, msgval.onerror)
+        run_push(msgval.node, msgval.value, msgval.onerror)
     end
 end
 
-function run_push(ts, rootnode, val, onerror)
-    node = rootnode
+function run_push(rootnode, val, onerror)
+    node = rootnode # error reporting - see onerror below
     try
-        send_value!(node, val, ts)
-        node.active = true
-        for action in action_queues[node]
+        send_value!(rootnode, val)
+        rootnode.active = true
+        for action in action_queues[rootnode]
             node = action.recipient.value
-            if isrequired(action)
-                action.recipient.value.active = true
-                do_action(action, ts)
-            else
-                action.recipient.value.active = false
+            if isrequired(node)
+                node.active = true
+                action.f(node)
             end
         end
-        node = rootnode
-        #reset active status for actions
-        foreach(action_queues[node]) do action
+        #reset active status to false for all nodes
+        for action in action_queues[rootnode]
             action.recipient.value.active = false
         end
     catch err
@@ -345,8 +319,6 @@ function run_push(ts, rootnode, val, onerror)
             bt = catch_backtrace()
             onerror(rootnode, val, node, CapturedException(err, bt))
         end
-    finally
-        timestep[] = ts
     end
 end
 
