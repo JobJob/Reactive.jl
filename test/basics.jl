@@ -248,14 +248,15 @@ facts("Basic checks") do
     context("bind") do
         x = Signal(0)
         y = Signal(0)
-        bind!(x,y,false)
+        bind!(y,x)
 
         push!(x,1000)
         step()
+        step() #need the second step here because bind push!es to the new signal
 
         @fact value(y) --> 1000
 
-        unbind!(x,y,false)
+        unbind!(y,x)
         push!(x,0)
         step()
 

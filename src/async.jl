@@ -7,9 +7,7 @@ export remote_map,
 Spawn a new task to run a function when input signal updates. Returns a signal of tasks and a `results` signal which updates asynchronously with the results. `init` will be used as the default value of `results`. `onerror` is the callback to be called when an error occurs, by default it is set to a callback which prints the error to STDERR. It's the same as the `onerror` argument to `push!` but is run in the spawned task.
 """
 function async_map(f, init, inputs...; typ=typeof(init), onerror=print_error)
-
-    node = Signal(typ, init, inputs)
-    action_queues[node] = []
+    node = Signal(typ, init) #results node
     map(inputs...; init=nothing, typ=Any) do args...
         outer_task = current_task()
         @async begin
@@ -48,4 +46,3 @@ function remote_map(procid, f, init, inputs...; typ=typeof(init), onerror=print_
         end
     end, node
 end
-

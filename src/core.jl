@@ -50,6 +50,13 @@ else
     end
 end
 
+Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
+    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
+    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+# A signal of types
+Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
+
 """
 Nodes are roots if they have an empty `node.roots`. We choose to set it as
 empty, rather than having `node.roots == (node,)` to avoid an unecessary
@@ -102,13 +109,6 @@ Change a Signal's name
 function rename!(s::Signal, name::String)
     s.name = name
 end
-
-Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
-Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
-# A signal of types
-Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 
 function isrequired(node::Signal)
     for p in node.parents

@@ -351,31 +351,30 @@ end
 const _bindings = Dict()
 
 """
-    bind!(a,b,twoway=true)
+    bind!(a,b)
 
-for every update to `a` also update `b` with the same value and vice-versa.
-To only bind updates from b to a, pass in a third argument as `false`
+for every update to `b` also update `a` with the same value and vice-versa.
+To only bind updates from b to a, pass in a third argument as `false`.
+Note that a must be an input node, i.e. one created with `Signal(...)`
+Equivalent of `foreach(bval->push!(a, bval), b)`
 """
-function bind!(a::Signal, b::Signal, twoway=true)
+function bind!(a::Signal, b::Signal)
 
     let
-        action = add_action!(a) do a
-            send_value!(b, value(a))
+        action = add_action!(b) do b
+            push!(a, value(b))
         end
         _bindings[a=>b] = action
     end
 
-    if twoway
-        bind!(b, a, false)
-    end
 end
 
 """
-    unbind!(a,b,twoway=true)
+    unbind!(a,b)
 
 remove a link set up using `bind!`
 """
-function unbind!(a::Signal, b::Signal, twoway=true)
+function unbind!(a::Signal, b::Signal)
     if !haskey(_bindings, a=>b)
         return
     end
@@ -384,7 +383,4 @@ function unbind!(a::Signal, b::Signal, twoway=true)
     remove_action!(a, action)
     delete!(_bindings, a=>b)
 
-    if twoway
-        unbind!(b, a, false)
-    end
 end
