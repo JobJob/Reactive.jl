@@ -8,7 +8,7 @@ number() = round(Int, rand()*1000)
 ## Basics
 
 facts("Basic checks") do
-
+    
     a = Signal(number())
     b = map(x -> x*x, a)
 
@@ -244,22 +244,28 @@ facts("Basic checks") do
         @fact value(y) --> 1
     end
 
-
     context("bind") do
         x = Signal(0)
         y = Signal(0)
-        bind!(y,x)
+        zpre = map(yval->2yval, y)
+        bind!(y,x) #bind must happen before adding more stuff to z
+        zpost = map(yval->2yval, y)
 
         push!(x,1000)
         step()
-        step() #need the second step here because bind push!es to the new signal
 
         @fact value(y) --> 1000
+        @fact value(zpre) --> 2000
+        @fact value(zpost) --> 2000
+        @fact bound_srcs(y) --> [x]
+        @fact bound_dests(x) --> [y]
 
         unbind!(y,x)
         push!(x,0)
         step()
 
         @fact value(y) --> 1000
+        @fact value(zpre) --> 2000
+        @fact value(zpost) --> 2000
     end
 end

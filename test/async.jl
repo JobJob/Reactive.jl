@@ -1,8 +1,6 @@
 using FactCheck
 using Reactive
 
-step() = Reactive.run(1)
-
 facts("Async") do
 
     context("async_map") do

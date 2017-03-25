@@ -16,7 +16,9 @@ export map,
        droprepeats,
        flatten,
        bind!,
-       unbind!
+       unbind!,
+       bound_srcs,
+       bound_dests
 
 """
     map(f, s::Signal...) -> signal
@@ -351,36 +353,75 @@ end
 const _bindings = Dict()
 
 """
-    bind!(a,b)
+    `bind!(dest, src, twoway=true)`
 
-for every update to `b` also update `a` with the same value and vice-versa.
-To only bind updates from b to a, pass in a third argument as `false`.
-Note that a must be an input node, i.e. one created with `Signal(...)`
-Equivalent of `foreach(bval->push!(a, bval), b)`
+for every update to `src` also update `dest` with the same value and, if
+`twoway` is true, vice-versa.
+
+Note that signals dependent on `dest` added before calling `bind!` (e.g. those
+created by calling `map(f, dest)`, `merge(dest, s1)`, `filter(f, dest)`, etc.
+before `bind!(src, dest)`) may be updated more than once when `src` updates. To
+ensure signals update just once per `push!`, call `bind!` before adding signals
+dependent on `dest`.
 """
-function bind!(a::Signal, b::Signal)
-
+function bind!(dest::Signal, src::Signal, twoway=true)
+    # add roots of src to dest's roots to ensure that dest's descendents
+    #update when src updates
+    dest.roots = (allroots(dest)..., allroots(src)...)
+    # add src as a parent so dest will have an active parent and the action will run
+    dest.parents = (dest.parents..., src)
     let
-        action = add_action!(b) do b
-            push!(a, value(b))
+        local action #will be bound to the last action but they're all identical
+        f = dest -> send_value!(dest, value(src))
+        # add to the action_queues of all roots of src to ensure the dest is
+        # updated regardless of how src updates
+        for root in allroots(src)
+            action = add_action!(f, dest, root)
+            # append dest's descendent actions to the root's action_queue, so
+            # that actions "downstream" from dest will run when src runs. This is
+            # a little crude and may cause actions to run more than once, hence
+            # the note in the docstring. XXX do something smart here like
+            # get dest_downstream = actions_after(dest, action_queues[first(allroots(dest))])
+            # remove all of them from action_queues[root], then readd after.
+            # I think that might work
+            append!(action_queues[root], action_queues[first(allroots(dest))])
         end
-        _bindings[a=>b] = action
+        _bindings[src=>dest] = action
+    end
+
+    if twoway
+        bind!(src, dest, false)
     end
 
 end
 
 """
-    unbind!(a,b)
+    `unbind!(dest, src, twoway=true)`
 
 remove a link set up using `bind!`
 """
-function unbind!(a::Signal, b::Signal)
-    if !haskey(_bindings, a=>b)
+function unbind!(dest::Signal, src::Signal, twoway=true)
+    if !haskey(_bindings, src=>dest)
         return
     end
 
-    action = _bindings[a=>b]
-    remove_action!(a, action)
-    delete!(_bindings, a=>b)
+    action = _bindings[src=>dest]
+    remove_action!(src, action)
+    delete!(_bindings, src=>dest)
 
+    if twoway
+        unbind!(src, dest, false)
+    end
 end
+
+"""
+`bound_dests(src::Signal)` returns a vector of all signals that will update when
+`src` updates, that were bound using `bind!(dest, src)`
+"""
+bound_dests(s::Signal) = [dest for (src, dest) in keys(_bindings) if src == s]
+
+"""
+`bound_srcs(dest::Signal)` returns a vector of all signals that will cause
+an update to `dest` when they update, that were bound using `bind!(dest, src)`
+"""
+bound_srcs(s::Signal) = [src for (src, dest) in keys(_bindings) if dest == s]

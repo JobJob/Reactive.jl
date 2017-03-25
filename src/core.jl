@@ -173,7 +173,6 @@ function add_action!(f, recipient, root=nothing)
     roots = root == nothing ? allroots(recipient) : [root]
     for aroot in roots
         push!(action_queues[aroot], a)
-        # action_queue_nodes[a.recipient] = true
     end
     a
 end
@@ -288,19 +287,34 @@ Processes `n` messages from the Reactive event queue.
 function run(n::Int=typemax(Int))
     for i=1:n
         message = take!(_messages)
-        isnull(message) && break # ignore emtpy messages
+        isnull(message) && break # break on null messages
 
         msgval = get(message)
         run_push(msgval.node, msgval.value, msgval.onerror)
     end
 end
 
-function run_push(rootnode, val, onerror)
-    node = rootnode # error reporting - see onerror below
+function run_push(pushnode, val, onerror)
+    node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        send_value!(rootnode, val)
-        rootnode.active = true
-        for action in action_queues[rootnode]
+        send_value!(pushnode, val)
+        pushnode.active = true
+        #
+        action_queue =
+            if haskey(action_queues, pushnode)
+                # pushnode is a root/input node
+                action_queues[pushnode]
+            else
+                # pushnode is a non-root/input node, so we use any old
+                # action_queue that pushnode is in. Why? Because it'll have
+                # all actions downstream of pushnode, which we want to run,
+                # and even though it'll also have actions for ancestors of
+                # pushnode, which we don't want to run, they won't be run since
+                # none of their parents will be active so isrequired will return
+                # false for all of them.
+                action_queues[first(allroots(pushnode))]
+            end
+        for action in action_queue
             node = action.recipient.value
             if isrequired(node)
                 node.active = true
@@ -308,7 +322,7 @@ function run_push(rootnode, val, onerror)
             end
         end
         #reset active status to false for all nodes
-        for action in action_queues[rootnode]
+        for action in action_queue
             action.recipient.value.active = false
         end
     catch err
@@ -317,13 +331,13 @@ function run_push(rootnode, val, onerror)
             rethrow()
         else
             bt = catch_backtrace()
-            onerror(rootnode, val, node, CapturedException(err, bt))
+            onerror(pushnode, val, node, CapturedException(err, bt))
         end
     end
 end
 
 # Default error handler function
-function print_error(node, val, error_node, ex)
+function print_error(pushnode, val, error_node, ex)
     lock(io_lock)
     io = STDERR
     println(io, "Failed to push!")
@@ -332,7 +346,7 @@ function print_error(node, val, error_node, ex)
     println(io)
     println(io, "to node")
     print(io, "    ")
-    show(io, node)
+    show(io, pushnode)
     println(io)
     println(io)
     println(io, "error at node: $error_node")
