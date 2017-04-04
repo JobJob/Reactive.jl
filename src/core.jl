@@ -205,14 +205,7 @@ end
 
 function close(n::Signal, warn_nonleaf=true)
     remove_actions!(n)
-    n.alive = false
-    if !isempty(n.actions)
-        # alarmist - see https://github.com/JuliaGizmos/Reactive.jl/issues/104
-        # any(map(isrequired, n.actions)) && warn_nonleaf &&
-        #     warn("closing a non-leaf node is not a good idea")
-        empty!(n.actions)
-    end
-
+    n.alive = false #TODO remove, not used anymore
     for p in n.parents
         delete!(p.preservers, n)
     end

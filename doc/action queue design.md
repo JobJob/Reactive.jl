@@ -1,6 +1,6 @@
 ### Action Queue Design
 
-Every time a node is pushed to a sequence of actions takes place. This action sequence can, for the most part, be determined as the signal graph is being created. So for each (root) node that can be `push!`ed to, a vector of actions - an `action_queue` - is set up and stored in `action_queues[node]`. When `node`s are created that depend on other nodes, they are added to all the appropriate action queues, i.e. all the action_queues that the parent nodes are in.
+Every time a node is pushed to a sequence of actions takes place. This action sequence can, for the most part, be determined as the signal graph is being created. So for each (root/input) node, a vector of actions - an `action_queue` - is set up and stored in `action_queues[node]`. When `node`s are created that depend on other nodes, they are added to all the appropriate action queues, i.e. all the action_queues that the parent nodes are in.
 
 Each node uses the field `roots` to store the keys (nodes) of the action_queues they are in.
 
