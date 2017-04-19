@@ -1,4 +1,4 @@
-import Base: map, merge, filter
+import Base: map, merge, filter, ==, hash
 
 if isdefined(Base, :foreach)
     import Base.foreach
@@ -253,6 +253,29 @@ function connect_droprepeats(output, input)
     end
 end
 
+#need these for `findin` to work...
+"""
+Probably shouldn't be equal if `a.recipient.value` has been garbage collected
+and is thus nothing, as they may have once been different actions. In truth
+though they almost definitely are the same since each function/action is only
+ever associated with one node at time of writing. This might change though, so
+play it safe.
+"""
+==(a::Action, b::Action) = a === b ||
+(a.f === b.f &&
+a.recipient.value != nothing &&
+b.recipient.value != nothing &&
+a.recipient.value === b.recipient.value)
+
+"""
+Hash should be based on objectid if `a.recipient.value` is `nothing` to match
+`==(::Action, ::Action)`
+"""
+function hash(a::Action, h::UInt)
+    a.recipient.value == nothing && return 3*objectid(a) - h
+    hash(a.recipient, h) + hash(a.f, h)
+end
+
 """
     flatten(input::Signal{Signal}; typ=Any)
 
@@ -266,72 +289,110 @@ function flatten(input::Signal; typ=Any, name=auto_name!("flatten", input))
     n
 end
 
+
+"""
+`connect_flatten(output, input)`
+`output` is the flatten node, `input` is the Signal{Signal} ("sigsig") node
+Descendents of this flatten node need to know to update on changes to
+the input sigsig (allroots(input)), or changes to the value of the
+current sig (roots == allroots(current_node))
+"""
 function connect_flatten(output, input)
     let current_node = value(input)
-        wire_flatten(current_node, subtree_actions::Vector{Action}) = begin
-            #children of this flatten node need to know to update
-            #on changes to the input sigsig (allroots(input)),
-            #or changes to the value of the current sig (roots == allroots(current_node))
-            # @show "switched to " current_node
+        # current_node is the signal/node that is the sigsig's current value
+        # wire_current_node ensures the flatten and its descendents update when
+        # the value of the sigsig's current signal changes
+        set_flatten_val(flatten_node) = send_value!(flatten_node, value(current_node))
+        wire_current_node(current_node, subtree_actions::Vector{Action}) = begin
             roots = allroots(current_node)
+            # @show "wire_current_node" output current_node
             for root in roots
-                #ensure updates when current_node gets pushed a new value
-                add_action!(output, root) do output
-                    send_value!(output, value(current_node))
-                end
-                #ensure updates for subtree too, if action is already in queue
-                #remove it and readd it so it's deeper down. XXX I think that's
-                #mostly correct but prob not 100%
+                # ensure flatten node updates when current_node gets pushed a new value
+                add_action!(set_flatten_val, output, root)
+                # ensure nodes in the subtree rooted at the flatten node update
+                # too when the flatten node's value changes.
+                # If the subtree node is already in queue, remove it and re-add
+                # it so it appears after the flatten node, this will ensure those
+                # downstream nodes will use the updated value of the flatten.
+                # XXX I think that's mostly correct but possibly not 100%
                 queue = action_queues[root]
-                for action in subtree_actions
-                    deleteat!(queue, findin(queue, 6))
-                end
+                # @show root queue subtree_actions "-------"
+                deleteat!(queue, findin(queue, subtree_actions))
                 append!(queue, subtree_actions)
             end
             output.roots = (OrderedSet((allroots(input)..., roots...))...)
         end
-        wire_flatten(current_node, Action[])
-        inp_roots = allroots(input)
-        for inp_root in inp_roots
-            add_action!(output, inp_root) do output
-                #input gets pushed a new signal
-                #remove all children from action queues of prev signal
-                oldroots = allroots(current_node)
-                subtree_actions = Action[]
-                for deadroot in oldroots
-                    subtree_actions = queue_subtree_actions(action_queues[deadroot], output)
+        # On creation the flatten node has no downstream actions, hence the empty Action[]
+        wire_current_node(current_node, Action[])
+        # create an action to update the flatten when the sigsig gets a new
+        # signal as its value. Add this action to all the action_queues that have
+        # the sigsig in it, so that the flatten and its descendents will update
+        # when this occurs.
+        for inp_root in allroots(input)
+            update_flatten(output) = begin
+                # remove all descendents from action queues of the (soon to be)
+                # previous signal (current_node) so they won't update anymore
+                # when the prev signal updates
+
+                # get all downstream actions from the output/flatten node
+                subtree_actions = queue_subtree_actions(output; queue_root=current_node)
+                for oldroot in allroots(current_node)
                     for action in subtree_actions
-                        #subtlety: iff the sub-node is also connected
-                        #to the deadroot via another path (i.e. not via this flatten)
-                        #it will be incorrectly removed from that action tree.
-                        #so we must ignore nodes whose ancestors without this node
-                        #contain deadroot
                         node = action.recipient.value
-                        deadroot in roots_without(node, output) && continue
-                        remove_actions!(node, deadroot)
+                        # subtlety: if the descendent `node` is also connected
+                        # to the oldroot via another path (i.e. not via this
+                        # flatten), it should still remain in the oldroot's
+                        # action_queue. So we don't remove nodes from oldroot's
+                        # action_queue whose roots, ignoring paths through the
+                        # flatten node (output), contain oldroot.
+                        oldroot in roots_without(node, output) && continue
+                        remove_actions!(node, oldroot)
                     end
                 end
                 current_node = value(input)
                 send_value!(output, value(current_node))
-                wire_flatten(current_node, subtree_actions)
+                wire_current_node(current_node, subtree_actions)
             end
+            add_action!(update_flatten, output, inp_root)
         end
     end
 end
 
-queue_subtree_actions(queue, basenode) = begin
-    baseidx = find(action->action.recipient.value == basenode, queue) |> first
-    subtree_nodes = Any[basenode]
+"""
+`queue_subtree_actions(basenode)`
+Get all actions that are descendent/"downstream" from basenode, i.e. all actions
+that should be triggered if basenode's value updates. Also includes the root of
+the subtree, i.e. the first action with basenode as a recipient
+"""
+function queue_subtree_actions(basenode; queue_root=first(allroots(basenode)))
+    # basenode_action_idxs = find(action->action.recipient.value == basenode, queue)
+    # isempty(basenode_action_idxs) && return basenode_action_idxs
+    queue = action_queues[queue_root]
+    isempty(queue) && return queue
+
+    @show "queue_subtree_actions" basenode queue_root queue _bindings
+    # If basenode_action_idxs is empty, then this is the special case of
+    # bind!ing to an input node...
+    baseidx = isroot(basenode)? 1 :
+                find(action->action.recipient.value == basenode, queue) |> first
+
+    # @show baseidx
+    subtree_nodes = Signal[basenode]
     subtree_actions = Action[queue[baseidx]]
-    for actionidx in baseidx:length(queue)
+    #go through actions in queue starting at subnode
+    for actionidx in baseidx+1:length(queue)
         action = queue[actionidx]
         node = action.recipient.value
-        if any(map(node.parents) do node; node in subtree_nodes end)
+        if any(map(node.parents) do node;
+                node in subtree_nodes ||
+                any(haskey(_bindings, src => node) for src in subtree_nodes)
+            end)
             #node has parents that are in the sub-tree
             push!(subtree_nodes, node)
             push!(subtree_actions, action)
         end
     end
+    @show subtree_actions "--------"
     subtree_actions
 end
 
@@ -357,37 +418,43 @@ const _bindings = Dict()
 
 for every update to `src` also update `dest` with the same value and, if
 `twoway` is true, vice-versa.
-
-Note that signals dependent on `dest` added before calling `bind!` (e.g. those
-created by calling `map(f, dest)`, `merge(dest, s1)`, `filter(f, dest)`, etc.
-before `bind!(src, dest)`) may be updated more than once when `src` updates. To
-ensure signals update just once per `push!`, call `bind!` before adding signals
-dependent on `dest`.
 """
 function bind!(dest::Signal, src::Signal, twoway=true)
-    # add roots of src to dest's roots to ensure that dest's descendents
-    #update when src updates
-    dest.roots = (allroots(dest)..., allroots(src)...)
-    # add src as a parent so dest will have an active parent and the action will run
-    dest.parents = (dest.parents..., src)
-    let
-        local action #will be bound to the last action but they're all identical
-        f = dest -> send_value!(dest, value(src))
-        # add to the action_queues of all roots of src to ensure the dest is
-        # updated regardless of how src updates
-        for root in allroots(src)
-            action = add_action!(f, dest, root)
-            # append dest's descendent actions to the root's action_queue, so
-            # that actions "downstream" from dest will run when src runs. This is
-            # a little crude and may cause actions to run more than once, hence
-            # the note in the docstring. XXX do something smart here like
-            # get dest_downstream = actions_after(dest, action_queues[first(allroots(dest))])
-            # remove all of them from action_queues[root], then readd after.
-            # I think that might work
-            append!(action_queues[root], action_queues[first(allroots(dest))])
+    if haskey(_bindings, src=>dest)
+        # subsequent bind!(dest, src) after initial should be a no-op
+        # though we should allow a change in preference for twoway bind.
+        if twoway
+            bind!(src, dest, false)
         end
-        _bindings[src=>dest] = action
+        return
     end
+    # add roots of src to dest's roots to ensure that new nodes descendent from
+    # dest will update when src updates.
+    dest.roots = allroots(src)
+    # add src as a parent so dest will have an active parent when src updates
+    # and the copy_to_dest action (and in-turn other downstream actions) will run
+    dest.parents = (dest.parents..., src)
+    local action #will be bound to the last action but they're all identical
+    copy_to_dest(dest) = begin
+        @show "copy_to_dest" dest src value(src)
+        send_value!(dest, value(src))
+    end
+    subtree_actions = queue_subtree_actions(dest)
+    # add copy_to_dest to the action_queues of all roots of src to ensure
+    # the dest node is updated whenever src updates
+    for root in allroots(src)
+        root == dest && continue
+        action = add_action!(copy_to_dest, dest, root)
+        # remove and re-append dest's descendent actions to the root's
+        # action_queue, so that actions "downstream" from dest will run when
+        # dest updates as a result of the src updating.
+        queue = action_queues[root]
+        @show dest src twoway root queue subtree_actions
+        deleteat!(queue, findin(queue, subtree_actions))
+        append!(queue, subtree_actions)
+        @show queue "-------"
+    end
+    _bindings[src=>dest] = action
 
     if twoway
         bind!(src, dest, false)

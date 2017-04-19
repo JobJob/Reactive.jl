@@ -8,6 +8,7 @@ using DataStructures
 const debug_memory = false # Set this to true to debug gc of nodes
 
 const nodes = WeakKeyDict()
+const root_nodes = WeakKeyDict()
 const io_lock = ReentrantLock()
 
 if !debug_memory
@@ -15,15 +16,18 @@ if !debug_memory
         value::T
         parents::Tuple
         roots::Tuple
-        actions::Vector
         active::Bool
         alive::Bool
         preservers::Dict
         name::String
-        function Signal(v, parents, actions, alive, pres, name)
+        function Signal(v, parents, alive, pres, name)
             roots = getroots(parents)
-            n=new(v, parents, roots, actions, false, alive, pres, name)
-            isempty(roots) && (action_queues[n] = []) #root node
+            n=new(v, parents, roots, false, alive, pres, name)
+            if isempty(roots)
+                #root node, init action queue
+                action_queues[n] = []
+                root_nodes[n] = nothing
+            end
             finalizer(n, remove_actions!)
             n
         end
@@ -33,16 +37,15 @@ else
         value::T
         parents::Tuple
         roots::Tuple
-        actions::Vector
         active::Bool
         alive::Bool
         preservers::Dict
         name::String
         bt
-        function Signal(v, parents, actions, alive, pres, name)
+        function Signal(v, parents, alive, pres, name)
             roots = getroots(parents)
-            n=new(v,parents,roots,actions,false,alive,pres,name,backtrace())
-            isempty(roots) && (action_queues[n] = []) #root node
+            n=new(v,parents,roots,false,alive,pres,name,backtrace())
+            isroot(n) && (action_queues[n] = []) #root node
             nodes[n] = nothing
             finalizer(n, log_gc)
             n
@@ -51,21 +54,35 @@ else
 end
 
 Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+    Signal{T}(x, parents, true, Dict{Signal, Int}(), name)
 Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, Action[], true, Dict{Signal, Int}(), name)
+    Signal{T}(x, parents, true, Dict{Signal, Int}(), name)
 # A signal of types
 Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
 
 """
 Nodes are roots if they have an empty `node.roots`. We choose to set it as
 empty, rather than having `node.roots == (node,)` to avoid an unecessary
-self-reference - which would require working around problems with printing, saving
-to disk etc. Instead, wherever we need the roots of a `node` to include the
-root node itself we call `allroots(node)`.
+self-reference - which would require working around problems with printing,
+saving to disk etc. Instead, wherever we need the roots of a `node` to include
+the root node itself we call `allroots(node)`.
 """
-allroots(maybe_root_node) =
-    isempty(maybe_root_node.roots) ? [maybe_root_node] : maybe_root_node.roots
+isroot(node) = haskey(root_nodes, node)
+
+"""
+`allroots(node)::Tuple{Vararg{Signal}}`
+Returns the list of roots that are keys into `action_queues` that this node's
+descendents are in. So if `node` is a root node, includes itself as the first
+root in the returned list of roots, otherwise just returns node.roots
+"""
+allroots(maybe_root_node) = isroot(maybe_root_node) ?
+    (maybe_root_node, maybe_root_node.roots...) : # maybe_root_node must be first, relied on in queue_subtree_actions
+    maybe_root_node.roots
+
+"""
+`allroots()` returns all root nodes currently alive
+"""
+allroots() = collect(keys(root_nodes))
 
 function getroots(parents)
     roots = Dict{Signal, Bool}()
@@ -159,7 +176,7 @@ function unpreserve(x::Signal)
 end
 
 Base.show(io::IO, n::Signal) =
-    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value), nactions=$(length(n.actions))$(n.alive ? "" : ", closed"))")
+    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value)$(n.alive ? "" : ", closed"))")
 
 value(n::Signal) = n.value
 value(::Void) = false
@@ -191,7 +208,7 @@ function remove_action!(node, action, root=nothing)
 end
 
 """
-remove the action associated with the node from all of it's roots' action_queues
+remove the action associated with the node from all of its roots' action_queues
 """
 function remove_actions!(node, root=nothing)
     roots = root == nothing ? allroots(node) : [root]
@@ -292,7 +309,7 @@ function run_push(pushnode, val, onerror)
     try
         send_value!(pushnode, val)
         pushnode.active = true
-        #
+
         action_queue =
             if haskey(action_queues, pushnode)
                 # pushnode is a root/input node
@@ -307,6 +324,7 @@ function run_push(pushnode, val, onerror)
                 # false for all of them.
                 action_queues[first(allroots(pushnode))]
             end
+        # @show "run_push" pushnode val action_queue
         for action in action_queue
             node = action.recipient.value
             if isrequired(node)
