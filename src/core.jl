@@ -20,9 +20,9 @@ if !debug_memory
         alive::Bool
         preservers::Dict
         name::String
-        function Signal(v, parents, alive, pres, name)
+        function (::Type{Signal{T}}){T}(v, parents, alive, pres, name)
             roots = getroots(parents)
-            n=new(v, parents, roots, false, alive, pres, name)
+            n=new{T}(v, parents, roots, false, alive, pres, name)
             if isempty(roots)
                 #root node, init action queue
                 action_queues[n] = []
@@ -42,9 +42,9 @@ else
         preservers::Dict
         name::String
         bt
-        function Signal(v, parents, alive, pres, name)
+        function (::Type{Signal{T}}){T}(v, parents, actions, alive, pres, name)
             roots = getroots(parents)
-            n=new(v,parents,roots,false,alive,pres,name,backtrace())
+            n=new{T}(v,parents,roots,false,alive,pres,name,backtrace())
             isroot(n) && (action_queues[n] = []) #root node
             nodes[n] = nothing
             finalizer(n, log_gc)
@@ -191,6 +191,7 @@ function add_action!(f, recipient, root=nothing)
     for aroot in roots
         push!(action_queues[aroot], a)
     end
+    maybe_restart_queue()
     a
 end
 
@@ -254,10 +255,14 @@ run_async(async::Bool) = (async_mode[] = async)
 Queue an update to a signal. The update will be propagated when all currently
 queued updates are done processing.
 
-The third optional argument is a callback to be called in case the update
-ends in an error. The callback receives 3 arguments: the signal, the value,
-and a `CapturedException` with the fields `ex` which is the rootal exception
-object, and `processed_bt` which is the backtrace of the exception.
+The third (optional) argument, `onerror`, is a callback triggered when
+the update ends in an error. The callback receives 4 arguments,
+`onerror(sig, val, node, capex)`, where `sig` and `val` are the Signal
+and value that `push!` was called with, respectively, `node` is the
+Signal whose action triggered the error, and `capex` is a
+`CapturedException` with the fields `ex` which is the original
+exception object, and `processed_bt` which is the backtrace of the
+exception.
 
 The default error callback will print the error and backtrace to STDERR.
 """
@@ -342,7 +347,14 @@ function run_push(pushnode, val, onerror)
             rethrow()
         else
             bt = catch_backtrace()
-            onerror(pushnode, val, node, CapturedException(err, bt))
+            try
+                msgval.onerror(msgval.node, msgval.value, node, CapturedException(err, bt))
+            catch err_onerror
+                if isa(err_onerror, MethodError)
+                    println(STDERR, "The syntax for `onerror` has changed, see ?push!")
+                end
+                rethrow()
+            end
         end
     end
 end
@@ -369,9 +381,16 @@ end
 # Run everything queued up till the instant of calling this function
 run_till_now() = run(Base.n_avail(_messages))
 
-# A decent default runner task
-function __init__()
-    global runner_task = @async begin
-        Reactive.run()
+# Works around world age problems (see issue #131)
+function maybe_restart_queue()
+    global runner_task
+    if !istaskdone(runner_task)
+        stop()
+        wait(runner_task)
+        runner_task = @async run()
     end
+end
+
+function __init__()
+    global runner_task = @async run()
 end
