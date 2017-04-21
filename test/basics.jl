@@ -1,9 +1,4 @@
-using FactCheck
 using Reactive
-
-step() = Reactive.run(1)
-queue_size() = Base.n_avail(Reactive._messages)
-number() = round(Int, rand()*1000)
 
 ## Basics
 
@@ -242,6 +237,7 @@ facts("Basic checks") do
 
         step()
         @fact value(y) --> 1
+        @fact queue_size() --> 0
     end
 
     context("bind") do

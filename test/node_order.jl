@@ -7,7 +7,10 @@ facts("multi-path graphs 1") do
     e = map(+, a, map(x->2x, a)) # Both depend on a
     f = map(+, a, b, c, e)
 
+    @fact queue_size() --> 0
+
     for (av,bv) in [(1,2),(1,3),(7,7)]
+        @show av bv
         push!(a, av)
         push!(b, bv-1)
         Reactive.run_till_now()

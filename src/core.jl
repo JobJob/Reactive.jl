@@ -7,46 +7,46 @@ using DataStructures
 
 const debug_memory = false # Set this to true to debug gc of nodes
 
-const nodes = WeakKeyDict()
-const root_nodes = WeakKeyDict()
+const nodeset = WeakKeyDict()
 const io_lock = ReentrantLock()
 
 if !debug_memory
     type Signal{T}
+        id::Int # also its index into `nodes`, and `edges`
         value::T
         parents::Tuple
-        roots::Tuple
         active::Bool
-        alive::Bool
+        actions::Vector
         preservers::Dict
         name::String
-        function (::Type{Signal{T}}){T}(v, parents, alive, pres, name)
-            roots = getroots(parents)
-            n=new{T}(v, parents, roots, false, alive, pres, name)
-            if isempty(roots)
-                #root node, init action queue
-                action_queues[n] = []
-                root_nodes[n] = nothing
-            end
+        function (::Type{Signal{T}}){T}(v, parents, pres, name)
+            id = length(nodes) + 1
+            n=new{T}(id, v, parents, false, Action[], pres, name)
+            push!(nodes, WeakRef(n))
+            push!(edges, Int[])
+            foreach(p->push!(edges[p.id], id), parents)
             finalizer(n, remove_actions!)
             n
         end
     end
 else
     type Signal{T}
+        id::Int
         value::T
         parents::Tuple
-        roots::Tuple
         active::Bool
-        alive::Bool
+        actions::Vector
         preservers::Dict
         name::String
         bt
-        function (::Type{Signal{T}}){T}(v, parents, actions, alive, pres, name)
-            roots = getroots(parents)
-            n=new{T}(v,parents,roots,false,alive,pres,name,backtrace())
-            isroot(n) && (action_queues[n] = []) #root node
-            nodes[n] = nothing
+        function (::Type{Signal{T}}){T}(v, parents, actions, pres, name)
+            id = length(nodes) + 1
+            n=new{T}(id, v, parents, false, Action[], pres, name, backtrace())
+            push!(nodes, WeakRef(n))
+            push!(edges, Int[])
+            foreach(p->push!(edges[p.id], id), parents)
+            finalizer(n, remove_actions!)
+            nodeset[n] = nothing
             finalizer(n, log_gc)
             n
         end
@@ -54,46 +54,11 @@ else
 end
 
 Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, true, Dict{Signal, Int}(), name)
+    Signal{T}(x, parents, Dict{Signal, Int}(), name)
 Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
-    Signal{T}(x, parents, true, Dict{Signal, Int}(), name)
+    Signal{T}(x, parents, Dict{Signal, Int}(), name)
 # A signal of types
 Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
-
-"""
-Nodes are roots if they have an empty `node.roots`. We choose to set it as
-empty, rather than having `node.roots == (node,)` to avoid an unecessary
-self-reference - which would require working around problems with printing,
-saving to disk etc. Instead, wherever we need the roots of a `node` to include
-the root node itself we call `allroots(node)`.
-"""
-isroot(node) = haskey(root_nodes, node)
-
-"""
-`allroots(node)::Tuple{Vararg{Signal}}`
-Returns the list of roots that are keys into `action_queues` that this node's
-descendents are in. So if `node` is a root node, includes itself as the first
-root in the returned list of roots, otherwise just returns node.roots
-"""
-allroots(maybe_root_node) = isroot(maybe_root_node) ?
-    (maybe_root_node, maybe_root_node.roots...) : # maybe_root_node must be first, relied on in queue_subtree_actions
-    maybe_root_node.roots
-
-"""
-`allroots()` returns all root nodes currently alive
-"""
-allroots() = collect(keys(root_nodes))
-
-function getroots(parents)
-    roots = Dict{Signal, Bool}()
-    for parent in parents
-        for root in allroots(parent)
-            roots[root] = true
-        end
-    end
-    return (keys(roots)...)
-end
-
 
 log_gc(n) =
     @async begin
@@ -104,10 +69,16 @@ log_gc(n) =
         unlock(io_lock)
     end
 
+# TODO remove this, don't need recipient anymore so can just change all to Functions
 immutable Action
     recipient::WeakRef
     f::Function
 end
+
+const action_queue = Action[] # stores the list of actions to perform, in order
+const nodes = WeakRef[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
+const edges = Vector{Int}[] #parents to children, useful for plotting graphs
+const first_action = WeakKeyDict{WeakRef, Int}()
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
 function auto_name!(name, parents...)
@@ -131,16 +102,10 @@ function isrequired(node::Signal)
     for p in node.parents
         #any active parent and we are go
         p.active && return true
-        # for flatten nodes, their parent is a Signal{Signal}
-        # their action isrequired if the parent is active (like other sigs: handled above)
-        # or if the current Signal of the parent (value(p)) is active:
-        (eltype(p) <: Signal) && value(p).active && return true
     end
-    node.active && return true #needed for fps node timers
+    node.active && return true #needed for fps node timers, and bind!
     return false
 end
-
-const action_queues = Dict{Signal, Vector{Action}}()
 
 # preserve/unpreserve nodes from gc
 """
@@ -176,7 +141,7 @@ function unpreserve(x::Signal)
 end
 
 Base.show(io::IO, n::Signal) =
-    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value)$(n.alive ? "" : ", closed"))")
+    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value))")
 
 value(n::Signal) = n.value
 value(::Void) = false
@@ -185,45 +150,46 @@ eltype{T}(::Type{Signal{T}}) = T
 
 ##### Connections #####
 
-function add_action!(f, recipient, root=nothing)
-    a = Action(WeakRef(recipient), f)
-    roots = root == nothing ? allroots(recipient) : [root]
-    for aroot in roots
-        push!(action_queues[aroot], a)
+# When an action is added to a node, we need to recreate the ordered list of actions
+function refresh_action_queue()
+    empty!(action_queue)
+    for node in nodes
+        first_action[node] = length(action_queue) + 1
+        node.value != nothing && append!(action_queue, node.value.actions)
     end
+    nothing
+end
+
+function add_action!(f, node)
+    a = Action(WeakRef(node), f)
+    push!(node.actions, a)
+    refresh_action_queue()
     maybe_restart_queue()
     a
 end
 
 """
-Removes `action` from the action_queues of all roots of `node`
+Removes `action` from `node.actions` and action_queue
 """
-function remove_action!(node, action, root=nothing)
-    roots = root == nothing ? allroots(node) : [root]
-    for root in roots
-        filter!(action_queues[root]) do queue_action
-            queue_action != action
-        end
-    end
+function remove_action!(node, action)
+    neq_action(queue_action) = queue_action != action
+    filter!(neq_action, node.actions)
+    filter!(neq_action, action_queue)
     nothing
 end
 
 """
-remove the action associated with the node from all of its roots' action_queues
+Remove all actions associated with the node from action_queue
 """
-function remove_actions!(node, root=nothing)
-    roots = root == nothing ? allroots(node) : [root]
-    for root in roots
-        filter!(action_queues[root]) do action
-            action.recipient.value != node
-        end
+function remove_actions!(node)
+    filter!(action_queue) do action
+        action.recipient.value != node
     end
     nothing
 end
 
 function close(n::Signal, warn_nonleaf=true)
     remove_actions!(n)
-    n.alive = false #TODO remove, not used anymore
     for p in n.parents
         delete!(p.preservers, n)
     end
@@ -314,32 +280,24 @@ function run_push(pushnode, val, onerror)
     try
         send_value!(pushnode, val)
         pushnode.active = true
-
-        action_queue =
-            if haskey(action_queues, pushnode)
-                # pushnode is a root/input node
-                action_queues[pushnode]
-            else
-                # pushnode is a non-root/input node, so we use any old
-                # action_queue that pushnode is in. Why? Because it'll have
-                # all actions downstream of pushnode, which we want to run,
-                # and even though it'll also have actions for ancestors of
-                # pushnode, which we don't want to run, they won't be run since
-                # none of their parents will be active so isrequired will return
-                # false for all of them.
-                action_queues[first(allroots(pushnode))]
-            end
+        # @show pushnode val _active_binds _bindings
+        # TODO test speed with and without first_action
         # @show "run_push" pushnode val action_queue
-        for action in action_queue
+        # TODO check when/why first_action doesn't contain node...
+        startfrom = haskey(first_action, node) ? first_action[node] : 1
+        # @show startfrom
+        for action in action_queue[startfrom:end]
             node = action.recipient.value
-            if isrequired(node)
+            if node != nothing && isrequired(node)
+                # @show action
                 node.active = true
-                action.f(node)
+                action.f(node) # TODO make all actions 0-arg anons - I don't think any of them need the node passed to them... they all have them in their closures
             end
         end
-        #reset active status to false for all nodes
-        for action in action_queue
-            action.recipient.value.active = false
+        # reset active status to false for all nodes downstream from pushnode
+        for node in nodes[pushnode.id:end]
+            # node.value != nothing && node.value.active && println("active: $node")
+            node.value != nothing && (node.value.active = false)
         end
     catch err
         if isa(err, InterruptException)
@@ -348,7 +306,7 @@ function run_push(pushnode, val, onerror)
         else
             bt = catch_backtrace()
             try
-                msgval.onerror(msgval.node, msgval.value, node, CapturedException(err, bt))
+                onerror(pushnode, val, node, CapturedException(err, bt))
             catch err_onerror
                 if isa(err_onerror, MethodError)
                     println(STDERR, "The syntax for `onerror` has changed, see ?push!")
@@ -376,6 +334,11 @@ function print_error(pushnode, val, error_node, ex)
     showerror(io, ex)
     println(io)
     unlock(io_lock)
+end
+
+function print_error_and_rethrow(pushnode, val, error_node, ex)
+    print_error(pushnode, val, error_node, ex)
+    rethrow()
 end
 
 # Run everything queued up till the instant of calling this function

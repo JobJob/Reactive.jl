@@ -129,14 +129,16 @@ end
 Sample the value of `b` whenever `a` updates.
 """
 function sampleon{T}(sampler, input::Signal{T}; name=auto_name!("sampleon", input))
-    n = Signal(T, value(input), (sampler, input); name=name)
-    connect_sampleon(n, sampler, input)
+    n = Signal(T, value(input), (sampler,); name=name)
+    connect_sampleon(n, input)
     n
 end
 
-function connect_sampleon(output, sampler, input)
-    add_action!(output, sampler) do output
-        send_value!(output, value(input))
+function connect_sampleon(output, input)
+    # this will only get run when sampler updates, as sampler is output's only
+    # parent, see isrequired
+    add_action!(output) do output
+        send_value!(output, input.value)
     end
 end
 
@@ -146,7 +148,7 @@ end
 
 Merge many signals into one. Returns a signal which updates when
 any of the inputs update. If many signals update at the same time,
-the value of the *youngest* input signal is taken.
+the value of the *youngest* (most recently created) input signal is taken.
 """
 function merge(in1::Signal, inputs::Signal...; name=auto_name!("merge", in1, inputs...))
     n = Signal(typejoin(map(eltype, (in1, inputs...))...), value(in1), (in1, inputs...); name=name)
@@ -155,32 +157,27 @@ function merge(in1::Signal, inputs::Signal...; name=auto_name!("merge", in1, inp
 end
 
 function connect_merge(output, inputs...)
-    let
-        for root in output.roots
-            add_action!(output, root) do output
-                lastactive = getlastactive(root, output)
-                send_value!(output, value(lastactive))
-            end
-        end
+    add_action!(output) do output
+        lastactive = getlastactive(output)
+        send_value!(output, value(lastactive))
     end
 end
 
 """
-search in action_queues[root] for node.parents
+`getlastactive(merge_node)`
+Search backwards in nodes, and return the first active node that is one
+of merge_node's parents
 """
-function getlastactive(root, node)
-    actionq = action_queues[root]
-    i = length(actionq)
-    lastactive = last(node.parents) # defaults to last signal parent
+function getlastactive(merge_node)
+    i = merge_node.id - 1
     while i > 0
-        action_node = actionq[i].recipient.value
-        if action_node.active && action_node in node.parents
-            lastactive = action_node
-            break
+        node = nodes[i].value
+        if node != nothing && node.active && node in merge_node.parents
+            return node
         end
         i -= 1
     end
-    lastactive
+    error("no active parent found for merge node: $merge_node")
 end
 
 """
@@ -214,15 +211,12 @@ Returns the delayed signal.
 """
 function delay{T}(input::Signal{T}, default=value(input); name=auto_name!("delay", input))
     n = Signal(T, default, (input,); name=name)
-    #n gets pushed to so has to be the root of an action_queue
-    n.roots = ()
-    action_queues[n] = []
     connect_delay(n, input)
     n
 end
 
 function connect_delay(output, input)
-    add_action!(output, input) do output
+    add_action!(input) do input
         push!(output, value(input))
     end
 end
@@ -411,6 +405,7 @@ roots_without(startnode, ignorenode; roots = Dict{Signal, Bool}()) = begin
 end
 
 const _bindings = Dict()
+const _active_binds = Dict()
 
 """
     `bind!(dest, src, twoway=true)`
@@ -427,32 +422,47 @@ function bind!(dest::Signal, src::Signal, twoway=true)
         end
         return
     end
-    # add roots of src to dest's roots to ensure that new nodes descendent from
-    # dest will update when src updates.
-    dest.roots = allroots(src)
-    # add src as a parent so dest will have an active parent when src updates
-    # and the copy_to_dest action (and in-turn other downstream actions) will run
-    dest.parents = (dest.parents..., src)
-    local action #will be bound to the last action but they're all identical
-    copy_to_dest(dest) = begin
-        @show "copy_to_dest" dest src value(src)
-        send_value!(dest, value(src))
-    end
-    subtree_actions = queue_subtree_actions(dest)
-    # add copy_to_dest to the action_queues of all roots of src to ensure
-    # the dest node is updated whenever src updates
-    for root in allroots(src)
-        root == dest && continue
-        action = add_action!(copy_to_dest, dest, root)
-        # remove and re-append dest's descendent actions to the root's
-        # action_queue, so that actions "downstream" from dest will run when
-        # dest updates as a result of the src updating.
-        queue = action_queues[root]
-        @show dest src twoway root queue subtree_actions
-        deleteat!(queue, findin(queue, subtree_actions))
-        append!(queue, subtree_actions)
-        @show queue "-------"
-    end
+
+    # We don't set src as a parent of dest, since a
+    # two-way bind would technically introduce a cycle into the signal graph,
+    # and I suppose we'd prefer not to have that. Instead we just set dest as
+    # active which will allow its downstream actions to run.
+    bind_updater =
+        if dest.id < src.id
+            twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
+            function bind_updater_src_post(src)
+                is_twoway = haskey(_bindings, dest=>src)
+                # @show is_twoway "bind_updater_src_post" src dest _active_binds[dest=>src]
+                if is_twoway && _active_binds[dest=>src]
+                    _active_binds[dest=>src] = false
+                else
+                    is_twoway && (_active_binds[dest=>src] = true)
+                    # src comes after dest in the action_queue, so dest's downstream
+                    # actions wouldn't run, so we run the action_queue from dest.
+                    # The _active_binds stops the (infinite) cycle of src updating dest
+                    # updating src ... in the case of a two-way bind
+                    src.active = false
+                    run_push(dest, src.value, print_error_and_rethrow) #XXX should we just assign the onerror to a global on each push... TODO check performance of that
+                    src.active = true
+                end
+            end
+        else
+            twoway && (_active_binds[src=>dest] = false) # pair is ordered by id
+            function bind_updater_src_pre(src)
+                is_twoway = haskey(_bindings, src=>dest)
+                # @show is_twoway "bind_updater_src_pre" dest src _active_binds[src=>dest]
+                if is_twoway && _active_binds[src=>dest]
+                    _active_binds[src=>dest] = false
+                else
+                    is_twoway && (_active_binds[src=>dest] = true)
+                    send_value!(dest, src.value)
+                    dest.active = true #set dest as active so dest's downstream actions will run
+                end
+            end
+        end
+    action = add_action!(bind_updater, src)
+    refresh_action_queue()
+
     _bindings[src=>dest] = action
 
     if twoway
