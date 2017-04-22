@@ -1,3 +1,4 @@
+import Reactive: set_test_debug
 
 facts("Timing functions") do
 
@@ -43,34 +44,56 @@ facts("Timing functions") do
     end
 
     context("throttle") do
-        x = Signal(0)
-        y = throttle(0.5, x)
-        y′ = throttle(1, x, push!, Int[], x->Int[]) # collect intermediate updates
-        z = foldp((acc, x) -> acc+1, 0, y)
-        z′ = foldp((acc, x) -> acc+1, 0, y′)
+        set_test_debug()
+        # get compilation time out of the way
+        # _x = Signal(0)
+        # _y = throttle(0.5, _x)
+        # _y′ = throttle(1, _x, push!, Int[], v->Int[]) # collect intermediate updates
+        # _z = foldp((acc, _x) -> acc+1, 0, _y)
 
+        # start here
+        x = Signal(0; name="x")
         push!(x, 1)
-        step()
-
         push!(x, 2)
-        step()
-
         push!(x, 3)
-        t0=time()
+        y = throttle(0.8, x; name="y")
+        t0 = time()
+        y′ = throttle(1.6, x, push!, Int[], x->Int[]; name="y′") # collect intermediate updates
+        z = foldp((acc, x) -> begin
+            println(msnow(), "z returning $(acc+1)")
+            acc+1
+        end, 0, y)
+        z′ = foldp((acc, x) -> begin
+            println(msnow(), "z′ returning $(acc+1)")
+            acc+1
+        end, 0, y′)
+
+        println("pre step 1")
         step()
+        println("post step 1")
+
+        println("pre step 2")
+        step()
+        println("post step 2")
+
+        println("pre step 3")
+        step()
+        println("post step 3")
 
         @fact value(y) --> 0
         @fact value(z) --> 0
         @fact queue_size() --> 0
 
-        sleep(0.55)
+        time_since_ytimer_started = time() - t0
+        sleep(0.9 - time_since_ytimer_started)
 
-        @fact queue_size() --> 1
-        step()
+        # @fact queue_size() --> 1
+        # step()
+        Reactive.run_till_now()
         @fact value(y) --> 3
         @fact value(z) --> 1
         @fact value(z′) --> 0
-        sleep(0.5)
+        sleep(0.8 - time_since_ytimer_started)
 
         @fact queue_size() --> 1
         step()

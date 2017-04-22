@@ -277,7 +277,7 @@ value of the current signal. The `typ` keyword argument specifies
 the type of the flattened signal. It is `Any` by default.
 """
 function flatten(input::Signal; typ=Any, name=auto_name!("flatten", input))
-    n = Signal(typ, value(value(input)), (input,); name=name)
+    n = Signal(typ, input.value.value, (input,); name=name)
     connect_flatten(n, input)
     n
 end
@@ -291,64 +291,29 @@ the input sigsig (allroots(input)), or changes to the value of the
 current sig (roots == allroots(current_node))
 """
 function connect_flatten(output, input)
-    let current_node = value(input)
-        # current_node is the signal/node that is the sigsig's current value
-        # wire_current_node ensures the flatten and its descendents update when
-        # the value of the sigsig's current signal changes
-        set_flatten_val(flatten_node) = send_value!(flatten_node, value(current_node))
-        wire_current_node(current_node, subtree_actions::Vector{Action}) = begin
-            roots = allroots(current_node)
-            # @show "wire_current_node" output current_node
-            for root in roots
-                # ensure flatten node updates when current_node gets pushed a new value
-                add_action!(set_flatten_val, output, root)
-                # ensure nodes in the subtree rooted at the flatten node update
-                # too when the flatten node's value changes.
-                # If the subtree node is already in queue, remove it and re-add
-                # it so it appears after the flatten node, this will ensure those
-                # downstream nodes will use the updated value of the flatten.
-                # XXX I think that's mostly correct but possibly not 100%
-                queue = action_queues[root]
-                # @show root queue subtree_actions "-------"
-                deleteat!(queue, findin(queue, subtree_actions))
-                append!(queue, subtree_actions)
-            end
-            output.roots = (OrderedSet((allroots(input)..., roots...))...)
-        end
-        # On creation the flatten node has no downstream actions, hence the empty Action[]
-        wire_current_node(current_node, Action[])
-        # create an action to update the flatten when the sigsig gets a new
-        # signal as its value. Add this action to all the action_queues that have
-        # the sigsig in it, so that the flatten and its descendents will update
-        # when this occurs.
-        for inp_root in allroots(input)
-            update_flatten(output) = begin
-                # remove all descendents from action queues of the (soon to be)
-                # previous signal (current_node) so they won't update anymore
-                # when the prev signal updates
-
-                # get all downstream actions from the output/flatten node
-                subtree_actions = queue_subtree_actions(output; queue_root=current_node)
-                for oldroot in allroots(current_node)
-                    for action in subtree_actions
-                        node = action.recipient.value
-                        # subtlety: if the descendent `node` is also connected
-                        # to the oldroot via another path (i.e. not via this
-                        # flatten), it should still remain in the oldroot's
-                        # action_queue. So we don't remove nodes from oldroot's
-                        # action_queue whose roots, ignoring paths through the
-                        # flatten node (output), contain oldroot.
-                        oldroot in roots_without(node, output) && continue
-                        remove_actions!(node, oldroot)
-                    end
-                end
-                current_node = value(input)
-                send_value!(output, value(current_node))
-                wire_current_node(current_node, subtree_actions)
-            end
-            add_action!(update_flatten, output, inp_root)
-        end
+    # input is a Signal{Signal} (aka sigsig)
+    # current_node is the signal/node that is the sigsig's current value.
+    # wire_flatten sets the flatten's parents when the sigsig gets a new
+    # signal as its value. This ensures the flatten output node's value will
+    # update when either the current_node updates, or when the input sigsig
+    # updates.
+    current_node = input.value
+    wire_flatten(output) = begin
+        # remove previous signal (current_node) from output's parents so
+        # it won't update anymore when the prev signal updates
+        prev_node = current_node
+        base_parents = filter(n->n != prev_node, output.parents)
+        current_node = input.value
+        output.parents = (base_parents..., current_node)
     end
+
+    # set_flatten_val updates the flatten node. It will be run when current_node
+    # gets pushed a new value or when the input gets pushed a new signal (since
+    # both are parents of the flatten)
+    set_flatten_val(flatten_node) = send_value!(flatten_node, current_node.value)
+    add_action!(wire_flatten, output)
+    add_action!(set_flatten_val, output)
+    wire_flatten(output)
 end
 
 """
@@ -442,7 +407,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
                     # The _active_binds stops the (infinite) cycle of src updating dest
                     # updating src ... in the case of a two-way bind
                     src.active = false
-                    run_push(dest, src.value, print_error_and_rethrow) #XXX should we just assign the onerror to a global on each push... TODO check performance of that
+                    run_push(dest, src.value, onerror_rethrow)
                     src.active = true
                 end
             end
@@ -461,7 +426,6 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             end
         end
     action = add_action!(bind_updater, src)
-    refresh_action_queue()
 
     _bindings[src=>dest] = action
 

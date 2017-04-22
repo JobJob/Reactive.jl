@@ -26,6 +26,7 @@ if !debug_memory
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
             finalizer(n, remove_actions!)
+            finalizer(n, remove_node!)
             n
         end
     end
@@ -153,9 +154,16 @@ eltype{T}(::Type{Signal{T}}) = T
 # When an action is added to a node, we need to recreate the ordered list of actions
 function refresh_action_queue()
     empty!(action_queue)
+    gc()
     for node in nodes
-        first_action[node] = length(action_queue) + 1
-        node.value != nothing && append!(action_queue, node.value.actions)
+        if node.value != nothing
+            first_action[node] = length(action_queue) + 1
+            append!(action_queue, node.value.actions)
+            if node.value.name in ["x","y"]
+                println("refresh_action_queue() set first_action for $(node.value.name) to $(first_action[node]), length(action_queue): $(length(action_queue))")
+                foreach(println, action_queue)
+            end
+        end
     end
     nothing
 end
@@ -184,6 +192,16 @@ Remove all actions associated with the node from action_queue
 function remove_actions!(node)
     filter!(action_queue) do action
         action.recipient.value != node
+    end
+    nothing
+end
+
+"""
+Remove node from nodes - called as a finalizer on GC'd node
+"""
+function remove_node!(deadnode)
+    filter!(nodes) do node
+        node != deadnode
     end
     nothing
 end
@@ -275,18 +293,21 @@ function run(n::Int=typemax(Int))
     end
 end
 
+test_debug = false
+set_test_debug(val=true) = (global test_debug = val)
+
 function run_push(pushnode, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
         send_value!(pushnode, val)
         pushnode.active = true
-        # @show pushnode val _active_binds _bindings
+        println("run_push $val to $(pushnode.name), test_debug is $test_debug")
+        test_debug && foreach(println, action_queue)
         # TODO test speed with and without first_action
-        # @show "run_push" pushnode val action_queue
         # TODO check when/why first_action doesn't contain node...
-        startfrom = haskey(first_action, node) ? first_action[node] : 1
-        # @show startfrom
-        for action in action_queue[startfrom:end]
+        first_action_idx = haskey(first_action, node) ? first_action[node] : 1
+        @show first_action_idx
+        for action in action_queue #[first_action_idx:end]
             node = action.recipient.value
             if node != nothing && isrequired(node)
                 # @show action
@@ -336,8 +357,7 @@ function print_error(pushnode, val, error_node, ex)
     unlock(io_lock)
 end
 
-function print_error_and_rethrow(pushnode, val, error_node, ex)
-    print_error(pushnode, val, error_node, ex)
+function onerror_rethrow(pushnode, val, error_node, ex)
     rethrow()
 end
 

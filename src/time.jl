@@ -1,4 +1,11 @@
-export every, fps, fpswhen, throttle
+export every, fps, fpswhen, throttle, msnow
+
+zpad2(v) = lpad(v,2,'0')
+zpad3(v) = lpad(v,3,'0')
+function msnow()
+    dt = DateTime(Dates.now())
+    "$(Dates.minute(dt) |> zpad2):$(Dates.second(dt) |> zpad2).$(Dates.millisecond(dt) |> zpad3) "
+end
 
 """
     throttle(dt, input, f=(acc,x)->x, init=value(input), reinit=x->x)
@@ -13,7 +20,9 @@ will create vectors of updates to the integer signal `x` which occur within 0.2 
 
 """
 function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init), name=auto_name!("throttle $(dt)s", node))
-    output = Signal(typ, init, (node,); name=name)
+    # we don't add `node` as a parent of throttle, as the action is added to the
+    # `node` itself, which pushes to the output node at the appropriate time.
+    output = Signal(typ, init, (); name=name)
     throttle_connect(dt, output, node, f, init, reinit)
     output
 end
@@ -21,29 +30,40 @@ end
 # Aggregate a signal producing an update at most once in dt seconds
 function throttle_connect(dt, output, input, f, init, reinit)
     collected = init
-    timer = Timer(x->x, 0)
-    prevpush = time()
+    timer = Timer(identity, 0) #dummy timer to initialise
     dopush(_) = begin
+        println("$(msnow()): throttle dopush $collected to $output")
         push!(output, collected)
         collected = reinit(collected)
         prevpush = time()
     end
-    add_action!(output) do output
+    dopushdbg(dtt) = begin
+        println("$(msnow()): timer fired dopushdbg $output")
+        dopush(dtt)
+    end
+
+    # we add an action to the input node to collect the values and push to the
+    # output when the time is right
+    prevpush = time()
+    function do_throttle(input)
         collected = f(collected,  value(input))
         elapsed = time() - prevpush
+        println("$(msnow()): throttle inp: $(input.name), output: $(output.name), val:$(input.value), collected: $collected, elapsed: $elapsed")
+
         close(timer)
         if elapsed > dt
             dopush(elapsed)
         else
-            timer = Timer(dopush, dt-elapsed)
+            timer = Timer(dopushdbg, dt-elapsed)
         end
     end
+    add_action!(do_throttle, input)
 end
 
 """
     every(dt)
 
-A signal that updates every `dt` seconds to the current timestamp. Consider using `fpswhen` or `fps` before using `every`.
+A signal that updates every `dt` seconds to the current timestamp. Consider using `fpswhen` or `fps` if you want specify the timing signal by frequency, rather than delay.
 """
 function every(dt; name=auto_name!("every $dt secs"))
     n = Signal(time(), (); name=name)
@@ -53,7 +73,11 @@ end
 
 function every_connect(dt, output)
     outputref = WeakRef(output)
-    timer = Timer(x -> push!(outputref.value, time(), ()->close(timer)), dt, dt)
+    function onerror_close_timer(pushnode, val, error_node, ex)
+        print_error(pushnode, val, error_node, ex)
+        close(timer)
+    end
+    timer = Timer(x -> push!(outputref.value, time(), onerror_close_timer), dt, dt)
     finalizer(output, _->close(timer))
     output
 end
@@ -73,6 +97,7 @@ end
 
 function setup_next_tick(outputref, switchref, dt, wait_dt)
     Timer(t -> begin
+        println("$(msnow()): fpswhen timer $(outputref.value), switchref.value: $(switchref.value)")
         if value(switchref.value)
             push!(outputref.value, dt)
         end
@@ -84,16 +109,29 @@ function fpswhen_connect(rate, switch, output)
     dt = 1.0/rate
     outputref = WeakRef(output)
     switchref = WeakRef(switch)
-    add_action!(output) do output
-        #this function will run if switch changes value
+    timer = Timer(identity, 0) #dummy timer to initialise
+    function fpswhen_runner(node)
+        # this function will run if switch gets a new value (i.e. is "active")
+        # and if output is pushed to (assumed to be by the timer)
+        println("$(msnow()): fpswhen action $output")
         if switch.value
             start_time = time()
-            setup_next_tick(outputref, switchref, start_time-prev_time, dt)
+            timer = setup_next_tick(outputref, switchref, start_time-prev_time, dt)
             prev_time = start_time
+        else
+            close(timer)
+            # downstream nodes should activate only when the switch is on
+            output.active = false
         end
+        # downstream nodes should activate only when the timer pushes to output,
+        # not when the switch gets a new value (switch.active flags that case)
+        switch.active && (output.active = false)
     end
-    # start the timer initially
-    switch.value && setup_next_tick(outputref, switchref, dt, dt)
+    add_action!(fpswhen_runner, output)
+    # start the timer initially, if switch is on
+    switch.value && (timer = setup_next_tick(outputref, switchref, dt, dt))
+    # ensure timer stops when node is garbage collected
+    finalizer(output, _->close(timer))
 end
 
 """
