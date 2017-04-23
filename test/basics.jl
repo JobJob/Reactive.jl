@@ -114,18 +114,21 @@ facts("Basic checks") do
     context("sampleon") do
         # sampleon
         g = Signal(0)
-
-        push!(g, number())
+        nv = number()
+        push!(g, nv)
+        println("step 1")
         step()
         i = Signal(true)
         j = sampleon(i, g)
         # default value
-        @fact value(j) --> value(g)
+        @fact value(j) --> value(g) # j == g == nv
         push!(g, value(g)-1)
+        println("step 2")
         step()
-        @fact value(j) --> value(g)+1
+        @fact value(j) --> value(g)+1 # g is nv - 1, j is unchanged on nv
         push!(i, true)
-        step()
+        println("step 3")
+        step() # resample
         @fact value(j) --> value(g)
     end
 

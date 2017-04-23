@@ -26,6 +26,7 @@ if !debug_memory
             push!(nodes, n)
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
+            push!(first_action, 1) # 1 is correct initially, will get updated as actions are added
             finalizer(n, remove_actions!)
             finalizer(n, remove_node!)
             n
@@ -80,7 +81,7 @@ end
 const action_queue = Action[] # stores the list of actions to perform, in order
 const nodes = Signal[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
-const first_action = WeakKeyDict{Signal, Int}()
+const first_action = Int[] # first_action[node.id] stores the index into action_queue of the node's first action
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
 function auto_name!(name, parents...)
@@ -101,11 +102,12 @@ function rename!(s::Signal, name::String)
 end
 
 function isrequired(node::Signal)
-    for p in node.parents
+    for p in node.parents::Tuple{Vararg{Signal}}
         #any active parent and we are go
         p.active && return true
     end
-    node.active && return true #needed for fps node timers, and bind!
+    # below needed for bind! because its tricky with active (and throttle/debounce?)
+    node.active && return true
     return false
 end
 
@@ -160,7 +162,7 @@ function refresh_action_queue()
     for node in nodes
         # if node_ref.value != nothing
             # node = node_ref.value
-            first_action[node] = length(action_queue) + 1
+            first_action[node.id] = length(action_queue) + 1
             append!(action_queue, node.actions)
             # if node.name in ["x","y"]
             #     println("refresh_action_queue() set first_action for $(node.name) to $(first_action[node]), length(action_queue): $(length(action_queue))")
@@ -296,30 +298,34 @@ function run(n::Int=typemax(Int))
     end
 end
 
-test_debug = false
-set_test_debug(val=true) = (global test_debug = val)
+const test_debug = Ref(false)
+set_test_debug(val=true) = (test_debug[] = val)
 
-function run_push(pushnode, val, onerror)
+function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        send_value!(pushnode, val)
+        # send_value!(pushnode, val)
+        pushnode.value = val
         pushnode.active = true
-        println("run_push $val to $(pushnode.name), test_debug is $test_debug")
-        test_debug && foreach(println, action_queue)
+        # if test_debug[]
+        #     # println("run_push $val to $(pushnode.name), test_debug is $test_debug")
+        #     foreach(println, action_queue)
+        # end
         # TODO test speed with and without first_action
-        # TODO check when/why first_action doesn't contain node...
-        first_action_idx = haskey(first_action, node) ? first_action[node] : 1
+
+        first_action_idx = first_action[node.id]
         # @show first_action_idx
-        for action in action_queue #[first_action_idx:end]
-            node = action.recipient.value
-            if node != nothing && isrequired(node)
+        # TODO test iterating nodes instead of actions
+        for action in action_queue[first_action_idx:end]
+            node = action.recipient.value::Signal
+            if isrequired(node)
                 # @show action
                 node.active = true
-                action.f(node) # TODO make all actions 0-arg anons - I don't think any of them need the node passed to them... they all have them in their closures
+                action.f()
             end
         end
         # reset active status to false for all nodes downstream from pushnode
-        for node in nodes[pushnode.id:end]
+        for node in nodes[pushnode.id:end]::Vector{Signal}
             # node.value != nothing && node.value.active && println("active: $node")
             # node.value != nothing && (node.value.active = false)
             node.active = false

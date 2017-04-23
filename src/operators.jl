@@ -35,10 +35,8 @@ function map(f, input::Signal, inputsrest::Signal...;
 end
 
 function connect_map(f, output, inputs...)
-    let
-        add_action!(output) do output
-            send_value!(output, f(map(value, inputs)...))
-        end
+    add_action!(output) do
+        output.value = f(map(value, inputs)...)
     end
 end
 
@@ -64,7 +62,7 @@ function filter{T}(f::Function, default, input::Signal{T}; name=auto_name!("filt
 end
 
 function connect_filter(f, default, output, input)
-    add_action!(output) do output
+    add_action!(output) do
         val = value(input)
         if f(val)
             send_value!(output, val)
@@ -89,7 +87,7 @@ function filterwhen{T}(predicate::Signal{Bool}, default, input::Signal{T};
 end
 
 function connect_filterwhen(output, predicate, input)
-    add_action!(output) do output
+    add_action!(output) do
         if value(predicate)
             output.active = true
             send_value!(output, value(input))
@@ -114,12 +112,11 @@ function foldp(f::Function, v0, inputs...; typ=typeof(v0), name=auto_name!("fold
 end
 
 function connect_foldp(f, v0, output, inputs)
-    let acc = v0
-        add_action!(output) do output
-            vals = map(value, inputs)
-            acc = f(acc, vals...)
-            send_value!(output, acc)
-        end
+    acc = v0
+    add_action!(output) do
+        vals = map(value, inputs)
+        acc = f(acc, vals...)
+        send_value!(output, acc)
     end
 end
 
@@ -128,16 +125,16 @@ end
 
 Sample the value of `b` whenever `a` updates.
 """
-function sampleon{T}(sampler, input::Signal{T}; name=auto_name!("sampleon", input))
-    n = Signal(T, value(input), (sampler,); name=name)
+function sampleon{T}(sample_trigger, input::Signal{T}; name=auto_name!("sampleon", input))
+    n = Signal(T, value(input), (sample_trigger,); name=name)
     connect_sampleon(n, input)
     n
 end
 
 function connect_sampleon(output, input)
-    # this will only get run when sampler updates, as sampler is output's only
+    # this will only get run when sampler updates, as sample_trigger is output's only
     # parent, see isrequired
-    add_action!(output) do output
+    add_action!(output) do
         send_value!(output, input.value)
     end
 end
@@ -157,7 +154,7 @@ function merge(in1::Signal, inputs::Signal...; name=auto_name!("merge", in1, inp
 end
 
 function connect_merge(output, inputs...)
-    add_action!(output) do output
+    add_action!(output) do
         lastactive = getlastactive(output)
         send_value!(output, value(lastactive))
     end
@@ -193,11 +190,10 @@ function previous{T}(input::Signal{T}, default=value(input); name=auto_name!("pr
 end
 
 function connect_previous(output, input)
-    let prev_value = value(input)
-        add_action!(output) do output
-            send_value!(output, prev_value)
-            prev_value = value(input)
-        end
+    prev_value = value(input)
+    add_action!(output) do
+        send_value!(output, prev_value)
+        prev_value = value(input)
     end
 end
 
@@ -216,8 +212,9 @@ function delay{T}(input::Signal{T}, default=value(input); name=auto_name!("delay
 end
 
 function connect_delay(output, input)
-    add_action!(input) do input
-        push!(output, value(input))
+    add_action!(output) do
+        # only push when input is active (avoids it pushing to itself endlessly)
+        input.active && push!(output, value(input))
     end
 end
 
@@ -234,14 +231,13 @@ function droprepeats{T}(input::Signal{T}; name=auto_name!("droprepeats", input))
 end
 
 function connect_droprepeats(output, input)
-    let prev_value = value(input)
-        add_action!(output) do output
-            if prev_value != value(input)
-                send_value!(output, value(input))
-                prev_value = value(input)
-            else
-                output.active = false
-            end
+    prev_value = value(input)
+    add_action!(output) do
+        if prev_value != value(input)
+            send_value!(output, value(input))
+            prev_value = value(input)
+        else
+            output.active = false
         end
     end
 end
@@ -298,75 +294,22 @@ function connect_flatten(output, input)
     # update when either the current_node updates, or when the input sigsig
     # updates.
     current_node = input.value
-    wire_flatten(output) = begin
+    wire_flatten() = begin
         # remove previous signal (current_node) from output's parents so
         # it won't update anymore when the prev signal updates
         prev_node = current_node
-        base_parents = filter(n->n != prev_node, output.parents)
+        orig_parents = filter(n->n != prev_node, output.parents)
         current_node = input.value
-        output.parents = (base_parents..., current_node)
+        output.parents = (orig_parents..., current_node)
     end
 
     # set_flatten_val updates the flatten node. It will be run when current_node
     # gets pushed a new value or when the input gets pushed a new signal (since
     # both are parents of the flatten)
-    set_flatten_val(flatten_node) = send_value!(flatten_node, current_node.value)
+    set_flatten_val() = send_value!(output, current_node.value)
     add_action!(wire_flatten, output)
     add_action!(set_flatten_val, output)
-    wire_flatten(output)
-end
-
-"""
-`queue_subtree_actions(basenode)`
-Get all actions that are descendent/"downstream" from basenode, i.e. all actions
-that should be triggered if basenode's value updates. Also includes the root of
-the subtree, i.e. the first action with basenode as a recipient
-"""
-function queue_subtree_actions(basenode; queue_root=first(allroots(basenode)))
-    # basenode_action_idxs = find(action->action.recipient.value == basenode, queue)
-    # isempty(basenode_action_idxs) && return basenode_action_idxs
-    queue = action_queues[queue_root]
-    isempty(queue) && return queue
-
-    @show "queue_subtree_actions" basenode queue_root queue _bindings
-    # If basenode_action_idxs is empty, then this is the special case of
-    # bind!ing to an input node...
-    baseidx = isroot(basenode)? 1 :
-                find(action->action.recipient.value == basenode, queue) |> first
-
-    # @show baseidx
-    subtree_nodes = Signal[basenode]
-    subtree_actions = Action[queue[baseidx]]
-    #go through actions in queue starting at subnode
-    for actionidx in baseidx+1:length(queue)
-        action = queue[actionidx]
-        node = action.recipient.value
-        if any(map(node.parents) do node;
-                node in subtree_nodes ||
-                any(haskey(_bindings, src => node) for src in subtree_nodes)
-            end)
-            #node has parents that are in the sub-tree
-            push!(subtree_nodes, node)
-            push!(subtree_actions, action)
-        end
-    end
-    @show subtree_actions "--------"
-    subtree_actions
-end
-
-"""
-find roots in paths not through ignorenode
-"""
-roots_without(startnode, ignorenode; roots = Dict{Signal, Bool}()) = begin
-    goodparents = filter(startnode.parents) do parent; parent != ignorenode end
-    for parent in goodparents
-        if isempty(parent.parents)
-            roots[parent] = true
-        else
-            roots_without(parent, ignorenode; roots=roots)
-        end
-    end
-    keys(roots)
+    wire_flatten()
 end
 
 const _bindings = Dict()
@@ -395,7 +338,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
     bind_updater =
         if dest.id < src.id
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
-            function bind_updater_src_post(src)
+            function bind_updater_src_post()
                 is_twoway = haskey(_bindings, dest=>src)
                 # @show is_twoway "bind_updater_src_post" src dest _active_binds[dest=>src]
                 if is_twoway && _active_binds[dest=>src]
@@ -413,7 +356,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             end
         else
             twoway && (_active_binds[src=>dest] = false) # pair is ordered by id
-            function bind_updater_src_pre(src)
+            function bind_updater_src_pre()
                 is_twoway = haskey(_bindings, src=>dest)
                 # @show is_twoway "bind_updater_src_pre" dest src _active_binds[src=>dest]
                 if is_twoway && _active_binds[src=>dest]

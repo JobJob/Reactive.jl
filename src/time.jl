@@ -62,25 +62,25 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
     collected = init
     timer = Timer(identity, 0) #dummy timer to initialise
     dopush(_) = begin
-        println("$(msnow()): throttle dopush $collected to $output")
+        # println("$(msnow()): throttle dopush $collected to $output")
         push!(output, collected)
         collected = reinit(collected)
         prevpush = time()
     end
     dopushdbg(dtt) = begin
-        println("$(msnow()): timer fired dopushdbg $output")
+        # println("$(msnow()): timer fired dopushdbg $output")
         dopush(dtt)
     end
 
     # we add an action to the input node to collect the values and push to the
     # output when the time is right
     prevpush = 0 # immediate push of `input`'s first update (unless leading is false)
-    function do_throttle(input)
+    function do_throttle()
         collected = f(collected,  value(input))
         prevpush == 0 && !leading && (prevpush = time())
         elapsed = time() - prevpush
         debounce && (elapsed = 0) # for debounce, only the timer can trigger a push
-        println("$(msnow()): throttle inp: $(input.name), output: $(output.name), val:$(input.value), collected: $collected, elapsed: $elapsed")
+        # println("$(msnow()): throttle inp: $(input.name), output: $(output.name), val:$(input.value), collected: $collected, elapsed: $elapsed")
 
         close(timer)
         if elapsed > dt
@@ -130,7 +130,7 @@ end
 
 function setup_next_tick(outputref, switchref, dt, wait_dt)
     Timer(t -> begin
-        println("$(msnow()): fpswhen timer $(outputref.value), switchref.value: $(switchref.value)")
+        # println("$(msnow()): fpswhen timer $(outputref.value), switchref.value: $(switchref.value)")
         if value(switchref.value)
             push!(outputref.value, dt)
         end
@@ -143,10 +143,10 @@ function fpswhen_connect(rate, switch, output)
     outputref = WeakRef(output)
     switchref = WeakRef(switch)
     timer = Timer(identity, 0) #dummy timer to initialise
-    function fpswhen_runner(node)
+    function fpswhen_runner()
         # this function will run if switch gets a new value (i.e. is "active")
         # and if output is pushed to (assumed to be by the timer)
-        println("$(msnow()): fpswhen action $output")
+        # println("$(msnow()): fpswhen action $output")
         if switch.value
             start_time = time()
             timer = setup_next_tick(outputref, switchref, start_time-prev_time, dt)
@@ -163,7 +163,7 @@ function fpswhen_connect(rate, switch, output)
     add_action!(fpswhen_runner, output)
     # start the timer initially, if switch is on
     switch.value && (timer = setup_next_tick(outputref, switchref, dt, dt))
-    # ensure timer stops when node is garbage collected
+    # ensure timer stops when output node is garbage collected
     finalizer(output, _->close(timer))
 end
 
