@@ -22,7 +22,8 @@ if !debug_memory
         function (::Type{Signal{T}}){T}(v, parents, pres, name)
             id = length(nodes) + 1
             n=new{T}(id, v, parents, false, Action[], pres, name)
-            push!(nodes, WeakRef(n))
+            # push!(nodes, WeakRef(n))
+            push!(nodes, n)
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
             finalizer(n, remove_actions!)
@@ -77,9 +78,9 @@ immutable Action
 end
 
 const action_queue = Action[] # stores the list of actions to perform, in order
-const nodes = WeakRef[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
+const nodes = Signal[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
-const first_action = WeakKeyDict{WeakRef, Int}()
+const first_action = WeakKeyDict{Signal, Int}()
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
 function auto_name!(name, parents...)
@@ -155,15 +156,17 @@ eltype{T}(::Type{Signal{T}}) = T
 function refresh_action_queue()
     empty!(action_queue)
     gc()
+    # for node_ref in nodes
     for node in nodes
-        if node.value != nothing
+        # if node_ref.value != nothing
+            # node = node_ref.value
             first_action[node] = length(action_queue) + 1
-            append!(action_queue, node.value.actions)
-            if node.value.name in ["x","y"]
-                println("refresh_action_queue() set first_action for $(node.value.name) to $(first_action[node]), length(action_queue): $(length(action_queue))")
-                foreach(println, action_queue)
-            end
-        end
+            append!(action_queue, node.actions)
+            # if node.name in ["x","y"]
+            #     println("refresh_action_queue() set first_action for $(node.name) to $(first_action[node]), length(action_queue): $(length(action_queue))")
+            #     foreach(println, action_queue)
+            # end
+        # end
     end
     nothing
 end
@@ -200,8 +203,8 @@ end
 Remove node from nodes - called as a finalizer on GC'd node
 """
 function remove_node!(deadnode)
-    filter!(nodes) do node
-        node != deadnode
+    filter!(nodes) do node_ref
+        node_ref.value != deadnode
     end
     nothing
 end
@@ -306,7 +309,7 @@ function run_push(pushnode, val, onerror)
         # TODO test speed with and without first_action
         # TODO check when/why first_action doesn't contain node...
         first_action_idx = haskey(first_action, node) ? first_action[node] : 1
-        @show first_action_idx
+        # @show first_action_idx
         for action in action_queue #[first_action_idx:end]
             node = action.recipient.value
             if node != nothing && isrequired(node)
@@ -318,7 +321,8 @@ function run_push(pushnode, val, onerror)
         # reset active status to false for all nodes downstream from pushnode
         for node in nodes[pushnode.id:end]
             # node.value != nothing && node.value.active && println("active: $node")
-            node.value != nothing && (node.value.active = false)
+            # node.value != nothing && (node.value.active = false)
+            node.active = false
         end
     catch err
         if isa(err, InterruptException)

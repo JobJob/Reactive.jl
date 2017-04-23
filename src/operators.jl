@@ -171,7 +171,7 @@ of merge_node's parents
 function getlastactive(merge_node)
     i = merge_node.id - 1
     while i > 0
-        node = nodes[i].value
+        node = nodes[i] # .value
         if node != nothing && node.active && node in merge_node.parents
             return node
         end
