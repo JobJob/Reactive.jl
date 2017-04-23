@@ -45,11 +45,6 @@ facts("Timing functions") do
 
     context("throttle") do
         # set_test_debug()
-        # get compilation time out of the way
-        # _x = Signal(0)
-        # _y = throttle(0.5, _x)
-        # _y′ = throttle(1, _x, push!, Int[], v->Int[]) # collect intermediate updates
-        # _z = foldp((acc, _x) -> acc+1, 0, _y)
 
         # start here
         x = Signal(0; name="x")
@@ -68,40 +63,32 @@ facts("Timing functions") do
         y′prev = previous(y′)
 
         i = 0
-        sleep_time = 0.1
+        sleep_time = 0.15
         t0 = typemax(Float64)
-        yvals = []
-        y′vals = []
-        prevycount = 0
-        prevy′count = 0
+        # push and sleep for a bit, y and y′ should only update every ydt and
+        # y′dt seconds respectively
         while time() - t0 <= 2.2
             i += 1
             push!(x, i)
-
-            ycount = floor((time() - t0)/ydt) # increases by 1 every ydt secs
-            ycount != prevycount && push!(yvals, i)
-            prevycount = ycount
-
-            y′count = floor((time() - t0)/y′dt) #i ncreases by 1 every y′dt secs
-            y′count != prevy′count && push!(y′vals, i)
-            prevy′count = y′count
 
             Reactive.run_till_now()
             t0 == typemax(Float64) && (t0 = time()) # start timer here to match signals
             sleep(sleep_time)
         end
         dt = time() - t0
-        @show yvals y′vals
         sleep(1.1) # sleep for the trailing-edge pushes of the throttles
         Reactive.run_till_now()
-        @show diff(value(y′))
+
+        zcount = floor(dt / ydt) + 1
+        z′count = floor(dt / y′dt) + 1
+
+        @show dt ydt y′dt zcount z′count value(y) value(y′) value(z) value(z′)
 
         @fact value(y) --> i
-        @fact value(z) --> roughly(ycount+1, atol=1)
-        @fact first(value(y′)) --> roughly(y′vals[end], atol=1)
-        @fact last(value(y′)) --> i
-        @fact diff(value(y′)) .== [1] --> Bool[true]
-        @fact value(z′) --> roughly(y′count+1, atol=1)
+        @fact value(z) --> roughly(zcount, atol=1)
+        @fact value(y′) --> [y′prev.value[end]+1 : i;]
+        @fact length(value(y′)) --> less_than(i/(z′count-1))
+        @fact value(z′) --> roughly(z′count, atol=1)
 
 
         # type safety
