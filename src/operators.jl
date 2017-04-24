@@ -349,9 +349,12 @@ function bind!(dest::Signal, src::Signal, twoway=true)
     # We don't set src as a parent of dest, since a
     # two-way bind would technically introduce a cycle into the signal graph,
     # and I suppose we'd prefer not to have that. Instead we just set dest as
-    # active which will allow its downstream actions to run.
+    # active when src updates, which will allow its downstream actions to run.
+
     bind_updater =
         if dest.id < src.id
+            # src comes after dest in the action_queue, so dest's downstream
+            # actions wouldn't run unless we arrange it.
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
             function bind_updater_src_post()
                 is_twoway = haskey(_active_binds, dest=>src)
@@ -361,8 +364,6 @@ function bind!(dest::Signal, src::Signal, twoway=true)
                     _active_binds[dest=>src] = false
                 else
                     is_twoway && (_active_binds[dest=>src] = true)
-                    # src comes after dest in the action_queue, so dest's
-                    # downstream actions wouldn't run unless we arrange it, so
                     # we "pause" the current push!, simulate a push! to dest with
                     # run_push then resume processing the original push by reactivating
                     # the previously active nodes.
