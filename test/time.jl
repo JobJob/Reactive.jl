@@ -1,52 +1,47 @@
-import Reactive: set_test_debug
-
 facts("Timing functions") do
 
-    # context("fpswhen") do
-    #     b = Signal(false)
-    #     t = fpswhen(b, 2)
-    #     acc = foldp((x, y) -> x+1, 0, t)
-    #     sleep(0.75)
-    #
-    #     @fact queue_size() --> 0
-    #     push!(b, true)
-    #
-    #     dt = @elapsed Reactive.run(3) # the first one starts the timer
-    #     push!(b, false)
-    #     Reactive.run(1)
-    #
-    #     sleep(0.11) # no more updates
-    #     @fact queue_size() --> 0
-    #
-    #     @fact dt --> roughly(1, atol=0.25) # mac OSX needs a lot of tolerence here
-    #     @fact value(acc) --> 2
-    #
-    # end
-    #
-    # context("every") do
-    #     t = every(0.5)
-    #     acc = foldp(push!, Float64[], t)
-    #     Reactive.run(4)
-    #     end_t = time()
-    #     log = copy(value(acc))
-    #
-    #     @fact log[end-1] --> roughly(end_t, atol=0.01)
-    #
-    #     close(acc)
-    #     close(t)
-    #     Reactive.run_till_now()
-    #
-    #     @fact [0.5, 0.5, 0.5] --> roughly(diff(log), atol=0.1)
-    #
-    #     sleep(0.75)
-    #     # make sure close actually also closed the timer
-    #     @fact queue_size() --> 0
-    # end
+    context("fpswhen") do
+        b = Signal(false)
+        t = fpswhen(b, 2)
+        acc = foldp((x, y) -> x+1, 0, t)
+        sleep(0.75)
+
+        @fact queue_size() --> 0
+        push!(b, true)
+
+        dt = @elapsed Reactive.run(3) # the first one starts the timer
+        push!(b, false)
+        Reactive.run(1)
+
+        sleep(0.11) # no more updates
+        @fact queue_size() --> 0
+
+        @fact dt --> roughly(1, atol=0.25) # mac OSX needs a lot of tolerence here
+        @fact value(acc) --> 2
+
+    end
+
+    context("every") do
+        t = every(0.5)
+        acc = foldp(push!, Float64[], t)
+        Reactive.run(4)
+        end_t = time()
+        log = copy(value(acc))
+
+        @fact log[end-1] --> roughly(end_t, atol=0.01)
+
+        close(acc)
+        close(t)
+        Reactive.run_till_now()
+
+        @fact [0.5, 0.5, 0.5] --> roughly(diff(log), atol=0.1)
+
+        sleep(0.75)
+        # make sure close actually also closed the timer
+        @fact queue_size() --> 0
+    end
 
     context("throttle") do
-        # set_test_debug()
-
-        # start here
         x = Signal(0; name="x")
         ydt = 0.5
         y′dt = 1.0

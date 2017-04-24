@@ -101,13 +101,15 @@ function rename!(s::Signal, name::String)
     s.name = name
 end
 
-function isrequired(node::Signal)
-    for p in node.parents::Tuple{Vararg{Signal}}
-        #any active parent and we are go
-        p.active && return true
-    end
-    # below needed for bind! because its tricky with active (and throttle/debounce?)
-    node.active && return true
+isactive(s::Signal) = s.active
+
+"""
+A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
+"""
+function isrequired(node)
+    length(node.actions) == 0 && return false
+    isactive(node) && return true # needed for bind! because its tricky with active. Also needed for throttle/debounce?)
+    any(isactive, node.parents) && return true
     return false
 end
 
@@ -154,7 +156,8 @@ eltype{T}(::Type{Signal{T}}) = T
 
 ##### Connections #####
 
-# When an action is added to a node, we need to recreate the ordered list of actions
+# When an action is added to a node, we recreate the ordered list of actions
+# TODO remove, now unused
 function refresh_action_queue()
     empty!(action_queue)
     gc()
@@ -164,10 +167,6 @@ function refresh_action_queue()
             # node = node_ref.value
             first_action[node.id] = length(action_queue) + 1
             append!(action_queue, node.actions)
-            # if node.name in ["x","y"]
-            #     println("refresh_action_queue() set first_action for $(node.name) to $(first_action[node]), length(action_queue): $(length(action_queue))")
-            #     foreach(println, action_queue)
-            # end
         # end
     end
     nothing
@@ -298,38 +297,37 @@ function run(n::Int=typemax(Int))
     end
 end
 
-const test_debug = Ref(false)
-set_test_debug(val=true) = (test_debug[] = val)
+const debug_mode = Ref(false)
+set_debug_mode(val=true) = (debug_mode[] = val)
+
+runaction(action) = action.f()
+
+deactivate!(node::Signal) = (node.active = false)
+activate!(node::Signal) = (node.active = true)
+activate!(noderef::WeakRef) = (noderef.value != nothing &&
+                                (noderef.value.active = true))
 
 function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        # send_value!(pushnode, val)
-        pushnode.value = val
-        pushnode.active = true
-        # if test_debug[]
-        #     # println("run_push $val to $(pushnode.name), test_debug is $test_debug")
+        send_value!(pushnode, val)
+        activate!(pushnode)
+        # if debug_mode[]
+        #     println("run_push $val to $(pushnode.name)")
         #     foreach(println, action_queue)
+        #     foreach(n->println(n.name, " active: ", n.active), nodes)
         # end
-        # TODO test speed with and without first_action
 
-        first_action_idx = first_action[node.id]
-        # @show first_action_idx
-        # TODO test iterating nodes instead of actions
-        for action in action_queue[first_action_idx:end]
-            node = action.recipient.value::Signal
+        # run the actions for all appropriate nodes
+        for node in nodes[pushnode.id:end]
             if isrequired(node)
-                # @show action
-                node.active = true
-                action.f()
+                activate!(node)
+                foreach(runaction, node.actions)
             end
         end
+
         # reset active status to false for all nodes downstream from pushnode
-        for node in nodes[pushnode.id:end]::Vector{Signal}
-            # node.value != nothing && node.value.active && println("active: $node")
-            # node.value != nothing && (node.value.active = false)
-            node.active = false
-        end
+        foreach(deactivate!, nodes[pushnode.id:end])
     catch err
         if isa(err, InterruptException)
             info("Reactive event loop was inturrupted.")

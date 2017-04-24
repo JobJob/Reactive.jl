@@ -273,5 +273,23 @@ facts("Basic checks") do
         @fact value(y) --> 1000
         @fact value(zpre) --> 2000
         @fact value(zpost) --> 2000
+
+        # bind where dest is before src in node list
+        a = Signal(1; name="a")
+        b = map(x->2x, a; name="b")
+        c = Signal(1; name="c")
+        d = map(x->4x, c; name="d")
+        bind!(a, d)
+        @fact value(d) --> value(a)
+
+        @fact queue_size() --> 0
+
+        push!(c, 3)
+        @fact queue_size() --> 1
+        step()
+        @fact value(c) --> 3
+        @fact value(d) --> 4*3
+        @fact value(a) --> 4*3
+        @fact value(b) --> 2*4*3
     end
 end

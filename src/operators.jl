@@ -316,6 +316,21 @@ const _bindings = Dict()
 const _active_binds = Dict()
 
 """
+Pause a push by recording the active nodes and setting them to inactive.
+The push can be resumed by reactivating the nodes.
+"""
+function pause_push()
+    active_nodes = WeakRef[]
+    for node in nodes
+        if node.active
+            push!(active_nodes, WeakRef(node))
+            deactivate!(node)
+        end
+    end
+    active_nodes
+end
+
+"""
     `bind!(dest, src, twoway=true)`
 
 for every update to `src` also update `dest` with the same value and, if
@@ -339,25 +354,31 @@ function bind!(dest::Signal, src::Signal, twoway=true)
         if dest.id < src.id
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
             function bind_updater_src_post()
-                is_twoway = haskey(_bindings, dest=>src)
+                # println("bind_updater_src_post")
+                is_twoway = haskey(_active_binds, dest=>src)
+                # @show src dest is_twoway
                 # @show is_twoway "bind_updater_src_post" src dest _active_binds[dest=>src]
                 if is_twoway && _active_binds[dest=>src]
+                    # The _active_binds stops the (infinite) cycle of src updating dest
+                    # updating src ... in the case of a two-way bind
                     _active_binds[dest=>src] = false
                 else
                     is_twoway && (_active_binds[dest=>src] = true)
-                    # src comes after dest in the action_queue, so dest's downstream
-                    # actions wouldn't run, so we run the action_queue from dest.
-                    # The _active_binds stops the (infinite) cycle of src updating dest
-                    # updating src ... in the case of a two-way bind
-                    src.active = false
+                    # src comes after dest in the action_queue, so dest's
+                    # downstream actions wouldn't run, so we pause the current
+                    # push!, simulate a push! to dest then resume processing the
+                    # original push.
+                    active_nodes = pause_push()
                     run_push(dest, src.value, onerror_rethrow)
-                    src.active = true
+                    foreach(activate!, active_nodes)
                 end
             end
         else
             twoway && (_active_binds[src=>dest] = false) # pair is ordered by id
             function bind_updater_src_pre()
-                is_twoway = haskey(_bindings, src=>dest)
+                is_twoway = haskey(_active_binds, src=>dest)
+                # println("bind_updater_src_pre")
+                # @show src dest is_twoway
                 # @show is_twoway "bind_updater_src_pre" dest src _active_binds[src=>dest]
                 if is_twoway && _active_binds[src=>dest]
                     _active_binds[src=>dest] = false
@@ -370,7 +391,12 @@ function bind!(dest::Signal, src::Signal, twoway=true)
         end
     action = add_action!(bind_updater, src)
 
-    _bindings[src=>dest] = action
+    _bindings[src=>dest] = action # XXX GC issue?
+
+    # set dest to src's value on creation. TODO check this matches old behaviour.
+    # @show src dest _active_binds
+    bind_updater()
+    # @show _active_binds
 
     if twoway
         bind!(src, dest, false)
