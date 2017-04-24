@@ -354,10 +354,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
         if dest.id < src.id
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
             function bind_updater_src_post()
-                # println("bind_updater_src_post")
                 is_twoway = haskey(_active_binds, dest=>src)
-                # @show src dest is_twoway
-                # @show is_twoway "bind_updater_src_post" src dest _active_binds[dest=>src]
                 if is_twoway && _active_binds[dest=>src]
                     # The _active_binds stops the (infinite) cycle of src updating dest
                     # updating src ... in the case of a two-way bind
@@ -365,9 +362,10 @@ function bind!(dest::Signal, src::Signal, twoway=true)
                 else
                     is_twoway && (_active_binds[dest=>src] = true)
                     # src comes after dest in the action_queue, so dest's
-                    # downstream actions wouldn't run, so we pause the current
-                    # push!, simulate a push! to dest then resume processing the
-                    # original push.
+                    # downstream actions wouldn't run unless we arrange it, so
+                    # we "pause" the current push!, simulate a push! to dest with
+                    # run_push then resume processing the original push by reactivating
+                    # the previously active nodes.
                     active_nodes = pause_push()
                     run_push(dest, src.value, onerror_rethrow)
                     foreach(activate!, active_nodes)
@@ -377,26 +375,21 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             twoway && (_active_binds[src=>dest] = false) # pair is ordered by id
             function bind_updater_src_pre()
                 is_twoway = haskey(_active_binds, src=>dest)
-                # println("bind_updater_src_pre")
-                # @show src dest is_twoway
-                # @show is_twoway "bind_updater_src_pre" dest src _active_binds[src=>dest]
                 if is_twoway && _active_binds[src=>dest]
                     _active_binds[src=>dest] = false
                 else
                     is_twoway && (_active_binds[src=>dest] = true)
                     send_value!(dest, src.value)
-                    dest.active = true #set dest as active so dest's downstream actions will run
+                    dest.active = true # set dest as active so dest's downstream actions will run
                 end
             end
         end
     action = add_action!(bind_updater, src)
 
-    _bindings[src=>dest] = action # XXX GC issue?
+    _bindings[src=>dest] = action # TODO GC
 
     # set dest to src's value on creation. TODO check this matches old behaviour.
-    # @show src dest _active_binds
     bind_updater()
-    # @show _active_binds
 
     if twoway
         bind!(src, dest, false)

@@ -312,11 +312,6 @@ function run_push(pushnode::Signal, val, onerror)
     try
         send_value!(pushnode, val)
         activate!(pushnode)
-        # if debug_mode[]
-        #     println("run_push $val to $(pushnode.name)")
-        #     foreach(println, action_queue)
-        #     foreach(n->println(n.name, " active: ", n.active), nodes)
-        # end
 
         # run the actions for all appropriate nodes
         for node in nodes[pushnode.id:end]

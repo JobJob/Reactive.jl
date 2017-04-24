@@ -1,12 +1,5 @@
 export every, fps, fpswhen, throttle, debounce, msnow
 
-zpad2(v) = lpad(v,2,'0')
-zpad3(v) = lpad(v,3,'0')
-function msnow()
-    dt = DateTime(Dates.now())
-    "$(Dates.minute(dt) |> zpad2):$(Dates.second(dt) |> zpad2).$(Dates.millisecond(dt) |> zpad3) "
-end
-
 """
 ```
 debounce(dt, input, f=(acc,x)->x, init=value(input), reinit=x->x;
@@ -62,13 +55,11 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
     collected = init
     timer = Timer(identity, 0) #dummy timer to initialise
     dopush(_) = begin
-        # println("$(msnow()): throttle dopush $collected to $output")
         push!(output, collected)
         collected = reinit(collected)
         prevpush = time()
     end
     dopushdbg(dtt) = begin
-        # println("$(msnow()): timer fired dopushdbg $output")
         dopush(dtt)
     end
 
@@ -80,7 +71,6 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
         prevpush == 0 && !leading && (prevpush = time())
         elapsed = time() - prevpush
         debounce && (elapsed = 0) # for debounce, only the timer can trigger a push
-        # println("$(msnow()): throttle inp: $(input.name), output: $(output.name), val:$(input.value), collected: $collected, elapsed: $elapsed")
 
         close(timer)
         if elapsed > dt
@@ -130,7 +120,6 @@ end
 
 function setup_next_tick(outputref, switchref, dt, wait_dt)
     Timer(t -> begin
-        # println("$(msnow()): fpswhen timer $(outputref.value), switchref.value: $(switchref.value)")
         if value(switchref.value)
             push!(outputref.value, dt)
         end
@@ -146,7 +135,6 @@ function fpswhen_connect(rate, switch, output)
     function fpswhen_runner()
         # this function will run if switch gets a new value (i.e. is "active")
         # and if output is pushed to (assumed to be by the timer)
-        # println("$(msnow()): fpswhen action $output")
         if switch.value
             start_time = time()
             timer = setup_next_tick(outputref, switchref, start_time-prev_time, dt)
