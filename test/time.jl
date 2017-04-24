@@ -48,11 +48,9 @@ facts("Timing functions") do
         y = throttle(ydt, x; name="y", leading=false)
         y′ = throttle(y′dt, x, push!, Int[], x->Int[]; name="y′", leading=false) # collect intermediate updates
         z = foldp((acc, x) -> begin
-            println(msnow(), "z returning $(acc+1)")
             acc+1
         end, 0, y)
         z′ = foldp((acc, x) -> begin
-            println(msnow(), "z′ returning $(acc+1)")
             acc+1
         end, 0, y′)
         y′prev = previous(y′)

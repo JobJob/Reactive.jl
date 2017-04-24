@@ -1,4 +1,4 @@
-export every, fps, fpswhen, throttle, debounce, msnow
+export every, fps, fpswhen, throttle, debounce
 
 """
 ```

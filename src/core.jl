@@ -147,7 +147,7 @@ function unpreserve(x::Signal)
 end
 
 Base.show(io::IO, n::Signal) =
-    write(io, "$(n.name): Signal{$(eltype(n))}($(n.value))")
+    write(io, "$(n.name): $(n.value) {$(eltype(n))}")
 
 value(n::Signal) = n.value
 value(::Void) = false

@@ -1,4 +1,4 @@
-import Base: map, merge, filter, ==, hash
+import Base: map, merge, filter
 
 if isdefined(Base, :foreach)
     import Base.foreach
@@ -89,7 +89,6 @@ end
 function connect_filterwhen(output, predicate, input)
     add_action!(output) do
         if value(predicate)
-            output.active = true
             send_value!(output, value(input))
         else
             output.active = false
@@ -240,29 +239,6 @@ function connect_droprepeats(output, input)
             output.active = false
         end
     end
-end
-
-#need these for `findin` to work...
-"""
-Probably shouldn't be equal if `a.recipient.value` has been garbage collected
-and is thus nothing, as they may have once been different actions. In truth
-though they almost definitely are the same since each function/action is only
-ever associated with one node at time of writing. This might change though, so
-play it safe.
-"""
-==(a::Action, b::Action) = a === b ||
-(a.f === b.f &&
-a.recipient.value != nothing &&
-b.recipient.value != nothing &&
-a.recipient.value === b.recipient.value)
-
-"""
-Hash should be based on objectid if `a.recipient.value` is `nothing` to match
-`==(::Action, ::Action)`
-"""
-function hash(a::Action, h::UInt)
-    a.recipient.value == nothing && return 3*objectid(a) - h
-    hash(a.recipient, h) + hash(a.f, h)
 end
 
 """
