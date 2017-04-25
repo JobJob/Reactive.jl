@@ -42,21 +42,24 @@ facts("Timing functions") do
     end
 
     context("throttle") do
+        gc()
         x = Signal(0; name="x")
         ydt = 0.5
         y′dt = 1.1
         y = throttle(ydt, x; name="y", leading=false)
         y′ = throttle(y′dt, x, push!, Int[], x->Int[]; name="y′", leading=false) # collect intermediate updates
         z = foldp((acc, x) -> begin
+            println("z got ", x)
             acc+1
         end, 0, y)
         z′ = foldp((acc, x) -> begin
+            println("z′ got ", x)
             acc+1
         end, 0, y′)
         y′prev = previous(y′)
 
         i = 0
-        sleep_time = 0.05
+        sleep_time = 0.15
         t0 = typemax(Float64)
         # push and sleep for a bit, y and y′ should only update every ydt and
         # y′dt seconds respectively
@@ -73,16 +76,15 @@ facts("Timing functions") do
         Reactive.run_till_now()
 
         zcount = ceil(dt / ydt) # throttle should have pushed every ydt seconds
-        z′count = ceil(dt / y′dt) + 1 # throttle should have pushed every y′dt seconds
+        z′count = ceil(dt / y′dt) # throttle should have pushed every y′dt seconds
 
-        @show dt ydt y′dt zcount z′count value(y) value(y′) value(z) value(z′)
+        @show i dt ydt y′dt zcount z′count value(y) value(y′) value(z) value(z′)
 
         @fact value(y) --> i
         @fact value(z) --> roughly(zcount, atol=1)
         @fact value(y′) --> [y′prev.value[end]+1 : i;]
         @fact length(value(y′)) --> less_than(i/(z′count-1))
         @fact value(z′) --> roughly(z′count, atol=1)
-
 
         # type safety
         s1 = Signal(3)
