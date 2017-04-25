@@ -22,8 +22,7 @@ if !debug_memory
         function (::Type{Signal{T}}){T}(v, parents, pres, name)
             id = length(nodes) + 1
             n=new{T}(id, v, parents, false, Action[], pres, name)
-            # push!(nodes, WeakRef(n))
-            push!(nodes, n)
+            push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
             finalizer(n, remove_node!)
@@ -75,7 +74,7 @@ immutable Action
     f::Function
 end
 
-const nodes = Signal[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
+const nodes = WeakRef[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
@@ -97,15 +96,6 @@ function rename!(s::Signal, name::String)
 end
 
 isactive(s::Signal) = s.active
-
-"""
-A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
-"""
-function isrequired(node)
-    length(node.actions) == 0 && return false
-    isactive(node) && return true # needed for bind! because its tricky with active. Also needed for throttle/debounce?)
-    return any(isactive, node.parents)
-end
 
 # preserve/unpreserve nodes from gc
 """
@@ -267,10 +257,25 @@ set_debug_mode(val=true) = (debug_mode[] = val)
 
 runaction(action) = action.f()
 
-deactivate!(node::Signal) = (node.active = false)
 activate!(node::Signal) = (node.active = true)
+deactivate!(node::Signal) = (node.active = false)
+
 activate!(noderef::WeakRef) = (noderef.value != nothing &&
                                 (noderef.value.active = true))
+
+deactivate!(noderef::WeakRef) = (noderef.value != nothing &&
+                                (noderef.value.active = false))
+
+"""
+A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
+"""
+function isrequired(node::Signal)
+    length(node.actions) == 0 && return false
+    isactive(node) && return true # needed for bind! because its tricky with active. Also needed for throttle/debounce?)
+    return any(isactive, node.parents)
+end
+
+isrequired(deadnode::Void) = false
 
 function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
@@ -279,7 +284,8 @@ function run_push(pushnode::Signal, val, onerror)
         activate!(pushnode)
 
         # run the actions for all appropriate nodes
-        for node in nodes[pushnode.id:end]
+        for node_ref in nodes[pushnode.id:end]
+            node = node_ref.value
             if isrequired(node)
                 activate!(node)
                 foreach(runaction, node.actions)

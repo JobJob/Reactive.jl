@@ -44,7 +44,7 @@ facts("Timing functions") do
     context("throttle") do
         x = Signal(0; name="x")
         ydt = 0.5
-        y′dt = 1.0
+        y′dt = 1.1
         y = throttle(ydt, x; name="y", leading=false)
         y′ = throttle(y′dt, x, push!, Int[], x->Int[]; name="y′", leading=false) # collect intermediate updates
         z = foldp((acc, x) -> begin
@@ -56,7 +56,7 @@ facts("Timing functions") do
         y′prev = previous(y′)
 
         i = 0
-        sleep_time = 0.15
+        sleep_time = 0.05
         t0 = typemax(Float64)
         # push and sleep for a bit, y and y′ should only update every ydt and
         # y′dt seconds respectively
@@ -69,11 +69,11 @@ facts("Timing functions") do
             sleep(sleep_time)
         end
         dt = time() - t0
-        sleep(1.1) # sleep for the trailing-edge pushes of the throttles
+        sleep(max(ydt,y′dt) + 0.1) # sleep for the trailing-edge pushes of the throttles
         Reactive.run_till_now()
 
-        zcount = floor(dt / ydt) + 1
-        z′count = floor(dt / y′dt) + 1
+        zcount = ceil(dt / ydt) # throttle should have pushed every ydt seconds
+        z′count = ceil(dt / y′dt) + 1 # throttle should have pushed every y′dt seconds
 
         @show dt ydt y′dt zcount z′count value(y) value(y′) value(z) value(z′)
 

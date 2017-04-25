@@ -169,7 +169,7 @@ of merge_node's parents
 function getlastactive(merge_node)
     i = merge_node.id - 1
     while i > 0
-        node = nodes[i] # .value
+        node = nodes[i].value
         if node != nothing && node.active && node in merge_node.parents
             return node
         end
@@ -290,7 +290,7 @@ function connect_flatten(output, input)
     wire_flatten()
 end
 
-const _bindings = Dict()
+const _bindings = Dict() # XXX GC Issue? can't use WeakKeyDict with Pairs...
 const _active_binds = Dict()
 
 """
@@ -299,8 +299,9 @@ The push can be resumed by reactivating the nodes.
 """
 function pause_push()
     active_nodes = WeakRef[]
-    for node in nodes
-        if node.active
+    for node_ref in nodes
+        node = node_ref.value
+        if node != nothing && node.active
             push!(active_nodes, WeakRef(node))
             deactivate!(node)
         end
@@ -364,8 +365,9 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             end
         end
     action = add_action!(bind_updater, src)
+    finalizer(src, unbind!)
 
-    _bindings[src=>dest] = action # TODO GC
+    _bindings[src=>dest] = action
 
     # set dest to src's value on creation. TODO check this matches old behaviour.
     bind_updater()
