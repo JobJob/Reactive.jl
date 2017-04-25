@@ -51,9 +51,11 @@ Same as `map`, but will be prevented from gc until all the inputs have gone out 
 foreach(f, in1::Signal, inputs::Signal...; kwargs...) = preserve(map(f, in1, inputs...; kwargs...))
 
 """
-    filter(f, signal)
+    filter(f, default, signal)
 
-remove updates from the signal where `f` returns `false`.
+remove updates from the `signal` where `f` returns `false`. The filter will hold
+the value default until f(value(signal)) returns true, when it will be updated
+to value(signal).
 """
 function filter{T}(f::Function, default, input::Signal{T}; name=auto_name!("filter", input))
     n = Signal(T, f(value(input)) ? value(input) : default, (input,); name=name)
@@ -329,14 +331,14 @@ function bind!(dest::Signal, src::Signal, twoway=true)
 
     bind_updater =
         if dest.id < src.id
-            # src comes after dest in the action_queue, so dest's downstream
-            # actions wouldn't run unless we arrange it.
+            # src comes after dest, so dest's downstream actions won't run
+            # unless we arrange it.
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
             function bind_updater_src_post()
                 is_twoway = haskey(_active_binds, dest=>src)
                 if is_twoway && _active_binds[dest=>src]
-                    # The _active_binds stops the (infinite) cycle of src updating dest
-                    # updating src ... in the case of a two-way bind
+                    # The _active_binds flag stops the (infinite) cycle of src
+                    # updating dest updating src ... in the case of a two-way bind
                     _active_binds[dest=>src] = false
                 else
                     is_twoway && (_active_binds[dest=>src] = true)
@@ -387,6 +389,9 @@ function unbind!(dest::Signal, src::Signal, twoway=true)
     action = _bindings[src=>dest]
     remove_action!(src, action)
     delete!(_bindings, src=>dest)
+
+    pair = src.id < dest.id ? src=>dest : dest=>src
+    haskey(_active_binds, pair) && delete!(_active_binds, pair)
 
     if twoway
         unbind!(src, dest, false)

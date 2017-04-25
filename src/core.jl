@@ -26,8 +26,6 @@ if !debug_memory
             push!(nodes, n)
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
-            push!(first_action, 1) # 1 is correct initially, will get updated as actions are added
-            finalizer(n, remove_actions!)
             finalizer(n, remove_node!)
             n
         end
@@ -48,7 +46,6 @@ else
             push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
-            finalizer(n, remove_actions!)
             nodeset[n] = nothing
             finalizer(n, log_gc)
             n
@@ -78,10 +75,8 @@ immutable Action
     f::Function
 end
 
-const action_queue = Action[] # stores the list of actions to perform, in order
 const nodes = Signal[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
-const first_action = Int[] # first_action[node.id] stores the index into action_queue of the node's first action
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
 function auto_name!(name, parents...)
@@ -109,8 +104,7 @@ A Node's actions should be run if any of its parents are active, or if it's alre
 function isrequired(node)
     length(node.actions) == 0 && return false
     isactive(node) && return true # needed for bind! because its tricky with active. Also needed for throttle/debounce?)
-    any(isactive, node.parents) && return true
-    return false
+    return any(isactive, node.parents)
 end
 
 # preserve/unpreserve nodes from gc
@@ -156,47 +150,18 @@ eltype{T}(::Type{Signal{T}}) = T
 
 ##### Connections #####
 
-# When an action is added to a node, we recreate the ordered list of actions
-# TODO remove, now unused
-function refresh_action_queue()
-    empty!(action_queue)
-    gc()
-    # for node_ref in nodes
-    for node in nodes
-        # if node_ref.value != nothing
-            # node = node_ref.value
-            first_action[node.id] = length(action_queue) + 1
-            append!(action_queue, node.actions)
-        # end
-    end
-    nothing
-end
-
 function add_action!(f, node)
     a = Action(WeakRef(node), f)
     push!(node.actions, a)
-    refresh_action_queue()
     maybe_restart_queue()
     a
 end
 
 """
-Removes `action` from `node.actions` and action_queue
+Removes `action` from `node.actions`
 """
 function remove_action!(node, action)
-    neq_action(queue_action) = queue_action != action
-    filter!(neq_action, node.actions)
-    filter!(neq_action, action_queue)
-    nothing
-end
-
-"""
-Remove all actions associated with the node from action_queue
-"""
-function remove_actions!(node)
-    filter!(action_queue) do action
-        action.recipient.value != node
-    end
+    filter!(a -> a != action, node.actions)
     nothing
 end
 
@@ -211,7 +176,7 @@ function remove_node!(deadnode)
 end
 
 function close(n::Signal, warn_nonleaf=true)
-    remove_actions!(n)
+    remove_node!(n)
     for p in n.parents
         delete!(p.preservers, n)
     end

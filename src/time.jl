@@ -131,7 +131,7 @@ function fpswhen_connect(rate, switch, output)
     dt = 1.0/rate
     outputref = WeakRef(output)
     switchref = WeakRef(switch)
-    timer = Timer(identity, 0) #dummy timer to initialise
+    timer = Timer(identity, 0) # dummy timer to initialise
     function fpswhen_runner()
         # this function will run if switch gets a new value (i.e. is "active")
         # and if output is pushed to (assumed to be by the timer)
