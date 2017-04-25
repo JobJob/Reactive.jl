@@ -365,7 +365,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             end
         end
     action = add_action!(bind_updater, src)
-    finalizer(src, unbind!)
+    finalizer(src, (src)->unbind!(dest, src, twoway))
 
     _bindings[src=>dest] = action
 
