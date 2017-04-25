@@ -36,7 +36,7 @@ end
 
 function connect_map(f, output, inputs...)
     add_action!(output) do
-        output.value = f(map(value, inputs)...)
+        set_value!(output, f(map(value, inputs)...))
     end
 end
 
@@ -67,9 +67,9 @@ function connect_filter(f, default, output, input)
     add_action!(output) do
         val = value(input)
         if f(val)
-            send_value!(output, val)
+            set_value!(output, val)
         else
-            output.active = false
+            deactivate!(output)
         end
     end
 end
@@ -91,9 +91,9 @@ end
 function connect_filterwhen(output, predicate, input)
     add_action!(output) do
         if value(predicate)
-            send_value!(output, value(input))
+            set_value!(output, value(input))
         else
-            output.active = false
+            deactivate!(output)
         end
     end
 end
@@ -117,7 +117,7 @@ function connect_foldp(f, v0, output, inputs)
     add_action!(output) do
         vals = map(value, inputs)
         acc = f(acc, vals...)
-        send_value!(output, acc)
+        set_value!(output, acc)
     end
 end
 
@@ -136,7 +136,7 @@ function connect_sampleon(output, input)
     # this will only get run when sampler updates, as sample_trigger is output's only
     # parent, see isrequired
     add_action!(output) do
-        send_value!(output, input.value)
+        set_value!(output, input.value)
     end
 end
 
@@ -157,7 +157,7 @@ end
 function connect_merge(output, inputs...)
     add_action!(output) do
         lastactive = getlastactive(output)
-        send_value!(output, value(lastactive))
+        set_value!(output, value(lastactive))
     end
 end
 
@@ -170,7 +170,7 @@ function getlastactive(merge_node)
     i = merge_node.id - 1
     while i > 0
         node = nodes[i].value
-        if node != nothing && node.active && node in merge_node.parents
+        if isactive(node) && node in merge_node.parents
             return node
         end
         i -= 1
@@ -193,7 +193,7 @@ end
 function connect_previous(output, input)
     prev_value = value(input)
     add_action!(output) do
-        send_value!(output, prev_value)
+        set_value!(output, prev_value)
         prev_value = value(input)
     end
 end
@@ -215,7 +215,7 @@ end
 function connect_delay(output, input)
     add_action!(output) do
         # only push when input is active (avoids it pushing to itself endlessly)
-        input.active && push!(output, value(input))
+        isactive(input) && push!(output, value(input))
     end
 end
 
@@ -235,10 +235,10 @@ function connect_droprepeats(output, input)
     prev_value = value(input)
     add_action!(output) do
         if prev_value != value(input)
-            send_value!(output, value(input))
+            set_value!(output, value(input))
             prev_value = value(input)
         else
-            output.active = false
+            deactivate!(output)
         end
     end
 end
@@ -284,7 +284,7 @@ function connect_flatten(output, input)
     # set_flatten_val updates the flatten node. It will be run when current_node
     # gets pushed a new value or when the input gets pushed a new signal (since
     # both are parents of the flatten)
-    set_flatten_val() = send_value!(output, current_node.value)
+    set_flatten_val() = set_value!(output, current_node.value)
     add_action!(wire_flatten, output)
     add_action!(set_flatten_val, output)
     wire_flatten()
@@ -299,9 +299,9 @@ The push can be resumed by reactivating the nodes.
 """
 function pause_push()
     active_nodes = WeakRef[]
-    for node_ref in nodes
-        node = node_ref.value
-        if node != nothing && node.active
+    for noderef in nodes
+        node = noderef.value
+        if isactive(node)
             push!(active_nodes, WeakRef(node))
             deactivate!(node)
         end
@@ -359,8 +359,8 @@ function bind!(dest::Signal, src::Signal, twoway=true)
                     _active_binds[src=>dest] = false
                 else
                     is_twoway && (_active_binds[src=>dest] = true)
-                    send_value!(dest, src.value)
-                    dest.active = true # set dest as active so dest's downstream actions will run
+                    set_value!(dest, src.value)
+                    activate!(dest) # set dest as active so dest's downstream actions will run
                 end
             end
         end

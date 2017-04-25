@@ -95,8 +95,6 @@ function rename!(s::Signal, name::String)
     s.name = name
 end
 
-isactive(s::Signal) = s.active
-
 # preserve/unpreserve nodes from gc
 """
     preserve(signal::Signal)
@@ -159,8 +157,8 @@ end
 Remove node from nodes - called as a finalizer on GC'd node
 """
 function remove_node!(deadnode)
-    filter!(nodes) do node_ref
-        node_ref.value != deadnode
+    filter!(nodes) do noderef
+        noderef.value != deadnode
     end
     nothing
 end
@@ -173,7 +171,7 @@ function close(n::Signal, warn_nonleaf=true)
     finalize(n) # stop timer etc.
 end
 
-send_value!(node::Signal, x) = (node.value = x)
+set_value!(node::Signal, x) = (node.value = x)
 
 ##### Messaging #####
 
@@ -259,12 +257,17 @@ runaction(action) = action.f()
 
 activate!(node::Signal) = (node.active = true)
 deactivate!(node::Signal) = (node.active = false)
+isactive(node::Signal) = node.active
+
+isactive(deadnode::Void) = false
 
 activate!(noderef::WeakRef) = (noderef.value != nothing &&
                                 (noderef.value.active = true))
 
 deactivate!(noderef::WeakRef) = (noderef.value != nothing &&
                                 (noderef.value.active = false))
+
+isactive(noderef::WeakRef) = (noderef.value != nothing && noderef.value.active)
 
 """
 A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
@@ -280,12 +283,12 @@ isrequired(deadnode::Void) = false
 function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        send_value!(pushnode, val)
+        set_value!(pushnode, val)
         activate!(pushnode)
 
         # run the actions for all appropriate nodes
-        for node_ref in nodes[pushnode.id:end]
-            node = node_ref.value
+        for noderef in nodes[pushnode.id:end]
+            node = noderef.value
             if isrequired(node)
                 activate!(node)
                 foreach(runaction, node.actions)

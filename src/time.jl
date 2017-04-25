@@ -142,11 +142,11 @@ function fpswhen_connect(rate, switch, output)
         else
             close(timer)
             # downstream nodes should activate only when the switch is on
-            output.active = false
+            deactivate!(output)
         end
         # downstream nodes should activate only when the timer pushes to output,
-        # not when the switch gets a new value (switch.active flags that case)
-        switch.active && (output.active = false)
+        # not when the switch gets a new value (isactive(switch) flags that case)
+        isactive(switch) && deactivate!(output)
     end
     add_action!(fpswhen_runner, output)
     # start the timer initially, if switch is on
