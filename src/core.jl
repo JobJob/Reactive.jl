@@ -21,7 +21,7 @@ if !debug_memory
         name::String
         function (::Type{Signal{T}}){T}(v, parents, pres, name)
             id = length(nodes) + 1
-            n=new{T}(id, v, parents, false, Action[], pres, name)
+            n=new{T}(id, v, parents, false, Function[], pres, name)
             push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
@@ -41,7 +41,7 @@ else
         bt
         function (::Type{Signal{T}}){T}(v, parents, actions, pres, name)
             id = length(nodes) + 1
-            n=new{T}(id, v, parents, false, Action[], pres, name, backtrace())
+            n=new{T}(id, v, parents, false, Function[], pres, name, backtrace())
             push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
@@ -67,12 +67,6 @@ log_gc(n) =
         println(STDOUT)
         unlock(io_lock)
     end
-
-# TODO remove this, don't need recipient anymore so can just change all to Functions
-immutable Action
-    recipient::WeakRef
-    f::Function
-end
 
 const nodes = WeakRef[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
@@ -139,10 +133,9 @@ eltype{T}(::Type{Signal{T}}) = T
 ##### Connections #####
 
 function add_action!(f, node)
-    a = Action(WeakRef(node), f)
-    push!(node.actions, a)
+    push!(node.actions, f)
     maybe_restart_queue()
-    a
+    f
 end
 
 """
@@ -253,7 +246,7 @@ end
 const debug_mode = Ref(false)
 set_debug_mode(val=true) = (debug_mode[] = val)
 
-runaction(action) = action.f()
+runaction(f) = f()
 
 activate!(node::Signal) = (node.active = true)
 deactivate!(node::Signal) = (node.active = false)
