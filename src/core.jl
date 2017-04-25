@@ -218,7 +218,6 @@ function async_push!(n, x, onerror=print_error)
     end
     nothing
 end
-async_push!(::Void, x, onerror=print_error) = nothing
 
 function break_loop()
     put!(_messages, Nullable{Message}())
