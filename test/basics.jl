@@ -74,7 +74,7 @@ facts("Basic checks") do
         push!(a, 0)
         step()
         f = foldp(+, 0, a)
-        nums = round(Int, rand(100)*1000)
+        nums = round.(Int, rand(100)*1000)
         map(x -> begin push!(a, x); step() end, nums)
 
         @fact sum(nums) --> value(f)

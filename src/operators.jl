@@ -276,7 +276,7 @@ function connect_flatten(output, input)
         # remove previous signal (current_node) from output's parents so
         # it won't update anymore when the prev signal updates
         prev_node = current_node
-        orig_parents = filter(n->n != prev_node, output.parents)
+        orig_parents = Iterators.filter(n->n != prev_node, output.parents)
         current_node = input.value
         output.parents = (orig_parents..., current_node)
     end

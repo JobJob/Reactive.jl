@@ -16,7 +16,7 @@ if !debug_memory
         value::T
         parents::Tuple
         active::Bool
-        actions::Vector
+        actions::Vector{Function}
         preservers::Dict
         name::String
         function (::Type{Signal{T}}){T}(v, parents, pres, name)
@@ -25,7 +25,7 @@ if !debug_memory
             push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
-            finalizer(n, remove_node!)
+            finalizer(n, schedule_node_cleanup)
             n
         end
     end
@@ -146,12 +146,22 @@ function remove_action!(node, action)
     nothing
 end
 
+const run_remove_dead_nodes = Ref(false)
 """
-Remove node from nodes - called as a finalizer on GC'd node
+Schedule a cleanup of dead nodes - called as a finalizer on each GC'd node
 """
-function remove_node!(deadnode)
+function schedule_node_cleanup(n)
+    run_remove_dead_nodes[] = true
+end
+
+"""
+Remove GC'd nodes from `nodes`, is run before push! when scheduled.
+Not thread-safe in the sense that if it is run while other code is iterating
+through `nodes`, e.g. in run_push, iteration could skip nodes.
+"""
+function remove_dead_nodes!()
     filter!(nodes) do noderef
-        noderef.value != deadnode
+        noderef.value != nothing
     end
     nothing
 end
@@ -275,6 +285,7 @@ isrequired(deadnode::Void) = false
 function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
+        run_remove_dead_nodes[] && remove_dead_nodes!()
         set_value!(pushnode, val)
         activate!(pushnode)
 
