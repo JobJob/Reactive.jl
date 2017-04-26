@@ -122,8 +122,9 @@ function unpreserve(x::Signal)
     x
 end
 
-Base.show(io::IO, n::Signal) =
-    write(io, "$(n.name): $(n.value) {$(eltype(n))}")
+Base.show(io::IO, n::Signal) = begin
+    write(io, "$(n.id): \"$(n.name)\" = $(n.value) $(eltype(n))")
+end
 
 value(n::Signal) = n.value
 value(::Void) = false
@@ -164,7 +165,10 @@ function close(n::Signal, warn_nonleaf=true)
     finalize(n) # stop timer etc.
 end
 
-set_value!(node::Signal, x) = (node.value = x)
+set_value!(node::Signal, x) = begin
+    println("set_value! of $(node.name) from $(node.value) to $x")
+    (node.value = x)
+end
 
 ##### Messaging #####
 
@@ -266,7 +270,7 @@ A Node's actions should be run if any of its parents are active, or if it's alre
 """
 function isrequired(node::Signal)
     length(node.actions) == 0 && return false
-    isactive(node) && return true # needed for bind! because its tricky with active. Also needed for throttle/debounce?)
+    isactive(node) && length(node.parents) == 0 && return true # needed for bind! because its tricky with active. Also needed for fpswhen)
     return any(isactive, node.parents)
 end
 
@@ -275,6 +279,7 @@ isrequired(deadnode::Void) = false
 function run_push(pushnode::Signal, val, onerror)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
+        println("run_push val: $val, pushnode: $pushnode")
         set_value!(pushnode, val)
         activate!(pushnode)
 
@@ -282,11 +287,12 @@ function run_push(pushnode::Signal, val, onerror)
         for noderef in nodes[pushnode.id:end]
             node = noderef.value
             if isrequired(node)
+                println("will run the $(length(node.actions)) action(s) of current_node: $node")
                 activate!(node)
                 foreach(runaction, node.actions)
             end
         end
-
+        @show filter(isactive, nodes)
         # reset active status to false for all nodes downstream from pushnode
         foreach(deactivate!, nodes[pushnode.id:end])
     catch err

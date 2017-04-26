@@ -157,7 +157,9 @@ end
 function connect_merge(output, inputs...)
     add_action!(output) do
         lastactive = getlastactive(output)
-        set_value!(output, value(lastactive))
+        lastactive != nothing && set_value!(output, value(lastactive))
+        # we don't deactivate! on lastactive == nothing, since I suppose the push
+        # should propagate even if some of the nodes died just after updating.
     end
 end
 
@@ -175,7 +177,13 @@ function getlastactive(merge_node)
         end
         i -= 1
     end
-    error("no active parent found for merge node: $merge_node")
+    # If parent nodes have all been GC'd, but there is still a reference to the
+    # merge in user code, then none of the parents should have been active,
+    # so the merge action shouldn't run, so we shouldn't have got here. However,
+    # in the rare case that the node got GC'd after it was found to be an active
+    # parent of the merge but before we got here, then I guess the merge node
+    # shouldn't change value.
+    return nothing
 end
 
 """
@@ -281,7 +289,8 @@ function connect_flatten(output, input)
         output.parents = (orig_parents..., current_node)
     end
 
-    # set_flatten_val updates the flatten node. It will be run when current_node
+    # set_flatten_val updates the flatten node.
+    # Both actions will be run when current_node
     # gets pushed a new value or when the input gets pushed a new signal (since
     # both are parents of the flatten)
     set_flatten_val() = set_value!(output, current_node.value)
@@ -337,6 +346,8 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             twoway && (_active_binds[dest=>src] = false) # pair is ordered by id
             function bind_updater_src_post()
                 is_twoway = haskey(_active_binds, dest=>src)
+                println("bind_updater_src_post")
+                @show is_twoway _active_binds[dest=>src]
                 if is_twoway && _active_binds[dest=>src]
                     # The _active_binds flag stops the (infinite) cycle of src
                     # updating dest updating src ... in the case of a two-way bind
@@ -347,6 +358,7 @@ function bind!(dest::Signal, src::Signal, twoway=true)
                     # run_push then resume processing the original push by reactivating
                     # the previously active nodes.
                     active_nodes = pause_push()
+                    @show active_nodes
                     run_push(dest, src.value, onerror_rethrow)
                     foreach(activate!, active_nodes)
                 end
@@ -355,6 +367,8 @@ function bind!(dest::Signal, src::Signal, twoway=true)
             twoway && (_active_binds[src=>dest] = false) # pair is ordered by id
             function bind_updater_src_pre()
                 is_twoway = haskey(_active_binds, src=>dest)
+                println("bind_updater_src_pre")
+                @show is_twoway _active_binds[src=>dest]
                 if is_twoway && _active_binds[src=>dest]
                     _active_binds[src=>dest] = false
                 else

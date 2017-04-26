@@ -59,9 +59,6 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
         collected = reinit(collected)
         prevpush = time()
     end
-    dopushdbg(dtt) = begin
-        dopush(dtt)
-    end
 
     # we add an action to the input node to collect the values and push to the
     # output when the time is right
@@ -77,7 +74,7 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
             # prevpush is reset in dopush so that Timer pushes reset it too
             dopush(elapsed)
         else
-            timer = Timer(dopushdbg, dt-elapsed)
+            timer = Timer(dopush, dt-elapsed)
         end
     end
     add_action!(do_throttle, input)
