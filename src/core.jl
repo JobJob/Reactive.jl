@@ -167,6 +167,16 @@ function remove_dead_nodes!()
         noderef.value != nothing
     end
     foreach((i_nr)->((i,nr) = i_nr; nr.value.id = i), enumerate(nodes)) # renumber nodes
+    reinit_edges!()
+    nothing
+end
+
+function reinit_edges!()
+    empty!(edges)
+    foreach(nr->push!(edges,[]), nodes)
+    foreach(nodes) do nr
+        foreach(p->push!(edges[p.id], id), nr.value.parents)
+    end
     nothing
 end
 
@@ -281,13 +291,14 @@ function actions_required(node::Signal, pushnode::Signal)
     node == pushnode && length(node.parents) == 0 && return true
     length(node.actions) == 0 && return false
     length(node.parents) == 0 && return false
-    return any(isactive, node.parents) && return true
+    return any(isactive, node.parents)
 
-    # Top line is needed for fpswhen. # The length(node.parents) == 0 ensures #
-    # pushes to non-root nodes update the # value of the node but don't run
-    # their # actions, which would likely # overwrite # the pushed value. n.b.
-    # nodes pushed # to are always set as # active even if their # actions don't
-    # run. This allows # downstream nodes to # run.
+    # Top line is needed for fpswhen. The length(node.parents) == 0 ensures
+    # pushes to non-root nodes update the value of the node but don't run
+    # their actions, which would likely overwrite the pushed value. n.b.
+    # nodes pushed to are always set as active even if their # actions don't
+    # run. This allows downstream nodes to run. See "doc/dev notes.md" for more
+    # details
 end
 
 function run_node(node::Signal, pushnode::Signal)
