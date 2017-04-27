@@ -15,7 +15,8 @@ For example
 will accumulate a vector of updates to the integer signal `x` and push it after `x` is inactive (doesn't update) for 0.2 seconds.
 
 """
-function debounce{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init), name=auto_name!("debounce $(dt)s", node))
+function debounce{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node),
+        reinit=x->x; typ=typeof(init), name=auto_name!("debounce $(dt)s", node))
     # we don't add `node` as a parent of throttle, as the action is added to the
     # `node` itself, which pushes to the output node at the appropriate time.
     output = Signal(typ, init, (); name=name)
@@ -42,10 +43,10 @@ If `leading` is `true`, the first update from `input` will be sent immediately b
 New in v0.4.1: `throttle`'s behaviour from previous versions is now available with the `debounce` signal type.
 
 """
-function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node), reinit=x->x; typ=typeof(init), name=auto_name!("throttle $(dt)s", node), leading=false)
-    # we don't add `node` as a parent of throttle, as the action is added to the
-    # `node` itself, which pushes to the output node at the appropriate time.
-    output = Signal(typ, init, (); name=name)
+function throttle{T}(dt, node::Signal{T}, f=(acc,x)->x, init=value(node),
+        reinit=x->x; typ=typeof(init), name=auto_name!("throttle $(dt)s", node),
+        leading=false)
+    output = Signal(typ, init, (node,); name=name)
     throttle_connect(dt, output, node, f, init, reinit, leading, false)
     output
 end
@@ -60,24 +61,26 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
         prevpush = time()
     end
 
-    # we add an action to the input node to collect the values and push to the
-    # output when the time is right
+    # we add the do_throttle as a foreach on the input, so when input updates it
+    # collects the input values and pushes to the output when the time is right.
     prevpush = 0 # immediate push of `input`'s first update (unless leading is false)
-    function do_throttle()
-        collected = f(collected,  value(input))
+    function do_throttle(inpval)
+        # println("do throttle input: $input, inpval: $inpval, output: $output, isactive(input): ", isactive(input))
+        collected = f(collected, inpval)
         prevpush == 0 && !leading && (prevpush = time())
         elapsed = time() - prevpush
         debounce && (elapsed = 0) # for debounce, only the timer can trigger a push
 
         close(timer)
         if elapsed > dt
-            # prevpush is reset in dopush so that Timer pushes reset it too
+            # prevpush is reset in dopush, so that calls via the Timer also reset it
             dopush(elapsed)
         else
             timer = Timer(dopush, dt-elapsed)
         end
+        nothing
     end
-    add_action!(do_throttle, input)
+    foreach(do_throttle, input; init=nothing, name="$(input.name) throttler")
 end
 
 """
@@ -110,8 +113,8 @@ returns a signal which when `switch` signal is true, updates `rate` times every 
 function fpswhen(switch, rate; name=auto_name!("$rate fpswhen", switch))
     # Creates a node and sets up a timer that pushes to the node every 1.0/rate
     # seconds.
-    n = Signal(Float64, 0.0, (switch,); name=name)
-    fpswhen_connect(rate, switch, n)
+    n = Signal(Float64, 0.0, (); name=name)
+    fpswhen_connect(rate, switch, n, name)
     n
 end
 
@@ -123,31 +126,29 @@ function setup_next_tick(outputref, switchref, dt, wait_dt)
     end, wait_dt)
 end
 
-function fpswhen_connect(rate, switch, output)
+function fpswhen_connect(rate, switch, output, name)
     prev_time = time()
     dt = 1.0/rate
     outputref = WeakRef(output)
     switchref = WeakRef(switch)
     timer = Timer(identity, 0) # dummy timer to initialise
-    function fpswhen_runner()
+    function fpswhen_runner(switchval=switch.value)
         # this function will run if switch gets a new value (i.e. is "active")
         # and if output is pushed to (assumed to be by the timer)
-        if switch.value
+        if switchval
             start_time = time()
             timer = setup_next_tick(outputref, switchref, start_time-prev_time, dt)
             prev_time = start_time
         else
             close(timer)
-            # downstream nodes should activate only when the switch is on
-            deactivate!(output)
         end
-        # downstream nodes should activate only when the timer pushes to output,
-        # not when the switch gets a new value (isactive(switch) flags that case)
-        isactive(switch) && deactivate!(output)
+        switchval
     end
+    # the foreach will start and stop the timer if switch's value updates, it'll
+    # also call fpswhen_runner on creation, to start the timer if switch is true
+    foreach(fpswhen_runner, switch; name="$name switch handler")
     add_action!(fpswhen_runner, output)
-    # start the timer initially, if switch is on
-    switch.value && (timer = setup_next_tick(outputref, switchref, dt, dt))
+
     # ensure timer stops when output node is garbage collected
     finalizer(output, _->close(timer))
 end

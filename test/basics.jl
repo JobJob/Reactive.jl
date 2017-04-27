@@ -4,8 +4,8 @@ using Reactive
 
 facts("Basic checks") do
 
-    a = Signal(number())
-    b = map(x -> x*x, a)
+    a = Signal(number(); name="a")
+    b = map(x -> x*x, a; name="b")
 
     context("map") do
 
@@ -47,10 +47,9 @@ facts("Basic checks") do
 
 
     context("merge") do
-
         ## Merge
-        d = Signal(number())
-        e = merge(d, b, a)
+        d = Signal(number(); name="d")
+        e = merge(b, d, a; name="e")
 
         # precedence to d
         @fact value(e) --> value(d)
@@ -58,6 +57,7 @@ facts("Basic checks") do
         push!(a, number())
         step()
         # precedence to b over a -- a is older.
+
         @fact value(e) --> value(b)
 
         c = map(identity, a) # Make a younger than b
@@ -70,11 +70,12 @@ facts("Basic checks") do
     context("foldp") do
 
         ## foldl over time
+
         gc()
         push!(a, 0)
         step()
         f = foldp(+, 0, a)
-        nums = round(Int, rand(100)*1000)
+        nums = round.([Int], rand(100)*1000)
         map(x -> begin push!(a, x); step() end, nums)
 
         @fact sum(nums) --> value(f)
@@ -249,19 +250,23 @@ facts("Basic checks") do
         zpre_count = 0
         zpost_count = 0
         zpre = map(yval->(zpre_count+=1; 2yval), y; name="zpre")
+        # map(...) runs the function once to get the init value on creation
+        @fact zpre_count --> 1
         bind!(y, x)
+        @fact zpre_count --> 2 # initialising the bind should cause zpre to run too
         zpost = map(yval->(zpost_count+=1; 2yval), y; name="zpost")
 
-        @fact zpre_count --> 1 #map(...) runs the function once to get the init value on creation
+        @fact zpre_count --> 2
         @fact zpost_count --> 1
 
+        @show queue_size()
         push!(x,1000)
         step()
 
         @fact value(y) --> 1000
         @fact value(zpre) --> 2000
         @fact value(zpost) --> 2000
-        @fact zpre_count --> 2
+        @fact zpre_count --> 3
         @fact zpost_count --> 2
         @fact bound_srcs(y) --> [x]
         @fact bound_dests(x) --> [y]
@@ -291,5 +296,29 @@ facts("Basic checks") do
         @fact value(d) --> 4*3
         @fact value(a) --> 4*3
         @fact value(b) --> 2*4*3
+    end
+
+    context("bind non-input") do
+        s = Signal(1; name="sig 1")
+        m = map(x->2x, s; name="m")
+        s2 = Signal(3; name="sig 2")
+        push!(m, 10)
+        step()
+        @fact value(m) --> 10
+
+        bind!(m, s2) #two-way bind
+        @fact value(m) --> 3
+        @fact value(s2) --> 3
+
+        push!(m, 6)
+        step()
+        @fact value(m) --> 6
+        @fact value(s2) --> 6
+
+        push!(s2, 10)
+        step()
+        @fact value(m) --> 10
+        @fact value(s2) --> 10
+
     end
 end

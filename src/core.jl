@@ -16,7 +16,7 @@ if !debug_memory
         value::T
         parents::Tuple
         active::Bool
-        actions::Vector
+        actions::Vector{Function}
         preservers::Dict
         name::String
         function (::Type{Signal{T}}){T}(v, parents, pres, name)
@@ -25,7 +25,7 @@ if !debug_memory
             push!(nodes, WeakRef(n))
             push!(edges, Int[])
             foreach(p->push!(edges[p.id], id), parents)
-            finalizer(n, remove_node!)
+            finalizer(n, schedule_node_cleanup)
             n
         end
     end
@@ -69,6 +69,7 @@ log_gc(n) =
     end
 
 const nodes = WeakRef[] #stores the nodes in order of creation (which is a topological order for execution of the nodes' actions)
+
 const edges = Vector{Int}[] #parents to children, useful for plotting graphs
 
 const node_count = DefaultDict{String,Int}(0) #counts of different signals for naming
@@ -123,7 +124,8 @@ function unpreserve(x::Signal)
 end
 
 Base.show(io::IO, n::Signal) = begin
-    write(io, "$(n.id): \"$(n.name)\" = $(n.value) $(eltype(n))")
+    active_str = isactive(n) ? "(active)" : ""
+    write(io, "$(n.id): \"$(n.name)\" = $(n.value) $(eltype(n)) $active_str")
 end
 
 value(n::Signal) = n.value
@@ -147,26 +149,37 @@ function remove_action!(node, action)
     nothing
 end
 
+const run_remove_dead_nodes = Ref(false)
 """
-Remove node from nodes - called as a finalizer on GC'd node
+Schedule a cleanup of dead nodes - called as a finalizer on each GC'd node
 """
-function remove_node!(deadnode)
+function schedule_node_cleanup(n)
+    # isopen(STDOUT) && println("scheduling removal of old node: $n, run_remove_dead_nodes: $run_remove_dead_nodes")
+    run_remove_dead_nodes[] = true
+end
+
+"""
+Remove GC'd nodes from `nodes`, is run before push! when scheduled.
+Not thread-safe in the sense that if it is run while other code is iterating
+through `nodes`, e.g. in run_push, iteration could skip nodes.
+"""
+function remove_dead_nodes!()
     filter!(nodes) do noderef
-        noderef.value != deadnode
+        noderef.value != nothing
     end
+    foreach((i_nr)->((i,nr) = i_nr; nr.value.id = i), enumerate(nodes)) # renumber nodes
     nothing
 end
 
 function close(n::Signal, warn_nonleaf=true)
-    remove_node!(n)
     for p in n.parents
         delete!(p.preservers, n)
     end
-    finalize(n) # stop timer etc.
+    finalize(n) # stop timer, schedule_node_cleanup, etc.
 end
 
 set_value!(node::Signal, x) = begin
-    println("set_value! of $(node.name) from $(node.value) to $x")
+    # println("set_value! of $(node.name) from $(node.value) to $x")
     (node.value = x)
 end
 
@@ -268,33 +281,37 @@ isactive(noderef::WeakRef) = (noderef.value != nothing && noderef.value.active)
 """
 A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
 """
-function isrequired(node::Signal)
+function actions_required(node, pushnode)
+    node == nothing && return false # node has been garbage collected
     length(node.actions) == 0 && return false
-    isactive(node) && length(node.parents) == 0 && return true # needed for bind! because its tricky with active. Also needed for fpswhen)
-    return any(isactive, node.parents)
+    any(isactive, node.parents) && return true
+    return node == pushnode && length(node.parents) == 0 # needed for bind! because its tricky with active. Also needed for fpswhen. The length(node.parents) == 0 ensures pushes to non-root nodes update the value of the node but don't run their actions, which would likely overwrite the pushed value. n.b. nodes pushed to are always set as active even if their actions don't run. This allows downstream nodes to run.
 end
 
-isrequired(deadnode::Void) = false
-
-function run_push(pushnode::Signal, val, onerror)
+function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        println("run_push val: $val, pushnode: $pushnode")
+        # println("run_push val: $val, pushnode: $pushnode")
+        if run_remove_dead_nodes[] && !dont_remove_dead
+            run_remove_dead_nodes[] = false
+            remove_dead_nodes!()
+        end
+        pushnode == nothing && return
         set_value!(pushnode, val)
         activate!(pushnode)
 
         # run the actions for all appropriate nodes
-        for noderef in nodes[pushnode.id:end]
+        for noderef in nodes #[pushnode.id:end]
             node = noderef.value
-            if isrequired(node)
-                println("will run the $(length(node.actions)) action(s) of current_node: $node")
+            if actions_required(node, pushnode)
+                # println("will run the $(length(node.actions)) action(s) of current_node: $node")
                 activate!(node)
                 foreach(runaction, node.actions)
             end
         end
-        @show filter(isactive, nodes)
+        # @show filter(isactive, nodes)
         # reset active status to false for all nodes downstream from pushnode
-        foreach(deactivate!, nodes[pushnode.id:end])
+        foreach(deactivate!, nodes) #[pushnode.id:end])
     catch err
         if isa(err, InterruptException)
             info("Reactive event loop was inturrupted.")
