@@ -277,11 +277,24 @@ isactive(noderef::WeakRef) = (noderef.value != nothing && noderef.value.active)
 """
 A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
 """
-function actions_required(node, pushnode)
-    node == nothing && return false # node has been garbage collected
+function actions_required(node::Signal, pushnode::Signal)
+    node == pushnode && length(node.parents) == 0 && return true
     length(node.actions) == 0 && return false
-    any(isactive, node.parents) && return true
-    return node == pushnode && length(node.parents) == 0 # needed for bind! because its tricky with active. Also needed for fpswhen. The length(node.parents) == 0 ensures pushes to non-root nodes update the value of the node but don't run their actions, which would likely overwrite the pushed value. n.b. nodes pushed to are always set as active even if their actions don't run. This allows downstream nodes to run.
+    length(node.parents) == 0 && return false
+    return any(isactive, node.parents) && return true
+
+    # Top line is needed for fpswhen. # The length(node.parents) == 0 ensures #
+    # pushes to non-root nodes update the # value of the node but don't run
+    # their # actions, which would likely # overwrite # the pushed value. n.b.
+    # nodes pushed # to are always set as # active even if their # actions don't
+    # run. This allows # downstream nodes to # run.
+end
+
+function run_node(node::Signal, pushnode::Signal)
+    if actions_required(node, pushnode)
+        activate!(node)
+        foreach(runaction, node.actions)
+    end
 end
 
 function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
@@ -291,20 +304,21 @@ function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
             run_remove_dead_nodes[] = false
             remove_dead_nodes!()
         end
-        pushnode == nothing && return
         set_value!(pushnode, val)
         activate!(pushnode)
 
         # run the actions for all appropriate nodes
-        for noderef in nodes #[pushnode.id:end]
+        for noderef in nodes[pushnode.id:end]
+            noderef.value == nothing && continue
             node = noderef.value
-            if actions_required(node, pushnode)
-                activate!(node)
-                foreach(runaction, node.actions)
-            end
+            run_node(node, pushnode)
         end
         # reset active status to false for all nodes downstream from pushnode
-        foreach(deactivate!, nodes) #[pushnode.id:end])
+        # foreach(deactivate!, nodes) #[pushnode.id:end])
+        for noderef in nodes[pushnode.id:end]
+            noderef.value == nothing && continue
+            deactivate!(noderef.value)
+        end
     catch err
         if isa(err, InterruptException)
             info("Reactive event loop was inturrupted.")
