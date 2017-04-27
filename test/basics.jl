@@ -297,28 +297,5 @@ facts("Basic checks") do
         @fact value(a) --> 4*3
         @fact value(b) --> 2*4*3
     end
-
-    context("bind non-input") do
-        s = Signal(1; name="sig 1")
-        m = map(x->2x, s; name="m")
-        s2 = Signal(3; name="sig 2")
-        push!(m, 10)
-        step()
-        @fact value(m) --> 10
-
-        bind!(m, s2) #two-way bind
-        @fact value(m) --> 3
-        @fact value(s2) --> 3
-
-        push!(m, 6)
-        step()
-        @fact value(m) --> 6
-        @fact value(s2) --> 6
-
-        push!(s2, 10)
-        step()
-        @fact value(m) --> 10
-        @fact value(s2) --> 10
-
-    end
+    
 end
