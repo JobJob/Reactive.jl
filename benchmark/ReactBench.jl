@@ -1,6 +1,8 @@
 using Reactive, GLAbstraction, GeometryTypes
+import Reactive: edges, nodes
+# Base.step() = Reactive.run(1)
+Reactive.stop()
 
-N = 10^6
 function test1(; use_async = true)
     # Reactive.run_async(use_async)
     a = Signal(0.0)
@@ -22,40 +24,44 @@ function test1(; use_async = true)
          r = a * Vec4f0(b, 1)
          Vec3f0(r[1], r[2], r[3])
     end
-
     total_time = 0.0
+
+    # warm the cache
+    push!(a, 0.1) # note causes the result to be slightly different, noticable for small N
+    Reactive.run_till_now()
+    println("post warmup, length(nodes): ", length(nodes))
 
     for i=1:N
         tic()
-#         @async push!(a, i)
         push!(a, i)
-        use_async && Reactive.run_till_now()
+        Reactive.run(1) # only needed for async
         total_time += toq()
     end
+
     @show(total_time)
     @show(total_time/N)
-    total_time
+    value(result), total_time
 end
 
 function bf(a,c)
     a/c
 end
-begin
-    local accum = 0.0
-    function ff(a)
-        accum += a
-    end
-end
+
 function test2()
     total_time = 0.0
     a = 0.0
+    accum = 0.0
+    function ff(x)
+        accum += x
+    end
+    local result
     for i=1:N
         tic()
 
         a = i
         b = bf(a, 23.0)
         c = bf(a, 8.0)
-        f = ff(a)
+        f = ff(b)
         d = Vec3f0(b)
         e = Vec3f0(c)
         g = Vec3f0(f)
@@ -68,10 +74,14 @@ function test2()
         result = Vec3f0(r[1], r[2], r[3])
         total_time += toq()
     end
+
     @show(total_time)
     @show(total_time/N)
-    total_time
+    result, total_time
 end
-react_time = test1()
-regular_time = test2()
+
+N = 10^6
+react_res, react_time = test1(use_async=true)
+regular_res, regular_time = test2()
+@show react_res regular_res
 react_time/regular_time
