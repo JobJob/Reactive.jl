@@ -163,11 +163,13 @@ Not thread-safe in the sense that if it is run while other code is iterating
 through `nodes`, e.g. in run_push, iteration could skip nodes.
 """
 function remove_dead_nodes!()
+    gc_enable(false)
     filter!(nodes) do noderef
         noderef.value != nothing
     end
     foreach((i_nr)->((i,nr) = i_nr; nr.value.id = i), enumerate(nodes)) # renumber nodes
     reinit_edges!()
+    gc_enable(true)
     nothing
 end
 
@@ -175,7 +177,7 @@ function reinit_edges!()
     empty!(edges)
     foreach(nr->push!(edges,[]), nodes)
     foreach(nodes) do nr
-        foreach(p->push!(edges[p.id], id), nr.value.parents)
+        foreach(p->push!(edges[p.id], nr.value.id), nr.value.parents)
     end
     nothing
 end
