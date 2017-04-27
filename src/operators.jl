@@ -159,8 +159,6 @@ end
 
 function connect_merge(output, inputs...)
     function merge_action()
-        # @show length(nodes) output.id
-        # foreach(println, nodes)
         lastactive = getlastactive(output)
         lastactive != nothing && set_value!(output, value(lastactive))
         # we don't deactivate! on lastactive == nothing, since I suppose the push

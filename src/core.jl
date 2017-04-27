@@ -154,7 +154,6 @@ const run_remove_dead_nodes = Ref(false)
 Schedule a cleanup of dead nodes - called as a finalizer on each GC'd node
 """
 function schedule_node_cleanup(n)
-    # isopen(STDOUT) && println("scheduling removal of old node: $n, run_remove_dead_nodes: $run_remove_dead_nodes")
     run_remove_dead_nodes[] = true
 end
 
@@ -178,10 +177,7 @@ function close(n::Signal, warn_nonleaf=true)
     finalize(n) # stop timer, schedule_node_cleanup, etc.
 end
 
-set_value!(node::Signal, x) = begin
-    # println("set_value! of $(node.name) from $(node.value) to $x")
-    (node.value = x)
-end
+set_value!(node::Signal, x) = (node.value = x)
 
 ##### Messaging #####
 
@@ -291,7 +287,6 @@ end
 function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
     node = pushnode # ensure node is set for error reporting - see onerror below
     try
-        # println("run_push val: $val, pushnode: $pushnode")
         if run_remove_dead_nodes[] && !dont_remove_dead
             run_remove_dead_nodes[] = false
             remove_dead_nodes!()
@@ -304,12 +299,10 @@ function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
         for noderef in nodes #[pushnode.id:end]
             node = noderef.value
             if actions_required(node, pushnode)
-                # println("will run the $(length(node.actions)) action(s) of current_node: $node")
                 activate!(node)
                 foreach(runaction, node.actions)
             end
         end
-        # @show filter(isactive, nodes)
         # reset active status to false for all nodes downstream from pushnode
         foreach(deactivate!, nodes) #[pushnode.id:end])
     catch err

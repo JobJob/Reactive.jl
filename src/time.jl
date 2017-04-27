@@ -65,7 +65,6 @@ function throttle_connect(dt, output, input, f, init, reinit, leading, debounce)
     # collects the input values and pushes to the output when the time is right.
     prevpush = 0 # immediate push of `input`'s first update (unless leading is false)
     function do_throttle(inpval)
-        # println("do throttle input: $input, inpval: $inpval, output: $output, isactive(input): ", isactive(input))
         collected = f(collected, inpval)
         prevpush == 0 && !leading && (prevpush = time())
         elapsed = time() - prevpush
