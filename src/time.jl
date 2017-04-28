@@ -112,7 +112,7 @@ returns a signal which when `switch` signal is true, updates `rate` times every 
 function fpswhen(switch, rate; name=auto_name!("$rate fpswhen", switch))
     # Creates a node and sets up a timer that pushes to the node every 1.0/rate
     # seconds.
-    n = Signal(Float64, 0.0, (); name=name)
+    n = Signal(Float64, 0.0, (switch, ); name=name)
     fpswhen_connect(rate, switch, n, name)
     n
 end
@@ -131,23 +131,25 @@ function fpswhen_connect(rate, switch, output, name)
     outputref = WeakRef(output)
     switchref = WeakRef(switch)
     timer = Timer(identity, 0) # dummy timer to initialise
-    function fpswhen_runner(switchval=switch.value)
+    function fpswhen_runner()
         # this function will run if switch gets a new value (i.e. is "active")
         # and if output is pushed to (assumed to be by the timer)
-        if switchval
+        if switch.value
             start_time = time()
             timer = setup_next_tick(outputref, switchref, start_time-prev_time, dt)
             prev_time = start_time
         else
             close(timer)
         end
-        switchval
+        switch.value
     end
-    # the foreach will start and stop the timer if switch's value updates, it'll
-    # also call fpswhen_runner on creation, to start the timer if switch is true
-    foreach(fpswhen_runner, switch; name="$name switch handler")
-    add_action!(fpswhen_runner, output)
+    # the fpswhen_aux will start and stop the timer if switch's value updates, it'll
+    # also setup the next tick once the first tick is pushed to output
+    fpswhen_aux = Signal(switch.value, (switch, output); name="fpswhen runner switch: $(switch.name), output: $(output.name)")
+    preserve(fpswhen_aux)
+    add_action!(fpswhen_runner, fpswhen_aux)
 
+    fpswhen_runner() # init
     # ensure timer stops when output node is garbage collected
     finalizer(output, _->close(timer))
 end

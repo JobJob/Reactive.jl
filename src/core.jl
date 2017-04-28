@@ -288,24 +288,12 @@ deactivate!(noderef::WeakRef) = (noderef.value != nothing &&
 isactive(noderef::WeakRef) = (noderef.value != nothing && noderef.value.active)
 
 """
-A Node's actions should be run if any of its parents are active, or if it's already been set to active in the current push! (since .active is reset to false at the end of processing each push)
+A Node's actions should be run if any of its parents are active. If the node
+doesn't have actions, don't set it to active (the last condition is required
+for fpswhen)
 """
-function actions_required(node::Signal, pushnode::Signal)
-    node == pushnode && length(node.parents) == 0 && return true
-    length(node.actions) == 0 && return false
-    length(node.parents) == 0 && return false
-    return any(isactive, node.parents)
-
-    # Top line is needed for fpswhen. The length(node.parents) == 0 ensures
-    # pushes to non-root nodes update the value of the node but don't run
-    # their actions, which would likely overwrite the pushed value. n.b.
-    # nodes pushed to are always set as active even if their # actions don't
-    # run. This allows downstream nodes to run. See "doc/dev notes.md" for more
-    # details
-end
-
-function run_node(node::Signal, pushnode::Signal)
-    if actions_required(node, pushnode)
+function run_node(node::Signal)
+    if length(node.actions) > 0 && any(isactive, node.parents)
         activate!(node)
         foreach(runaction, node.actions)
     end
@@ -325,7 +313,7 @@ function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
         for noderef in nodes[pushnode.id:end]
             noderef.value == nothing && continue
             node = noderef.value
-            run_node(node, pushnode)
+            run_node(node)
         end
         # reset active status to false for all nodes downstream from pushnode
         # foreach(deactivate!, nodes) #[pushnode.id:end])

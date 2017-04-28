@@ -133,13 +133,12 @@ function sampleon{T}(sample_trigger, input::Signal{T}; name=auto_name!("sampleon
 end
 
 function connect_sampleon(output, input)
-    # this will only get run when sampler updates, as sample_trigger is output's only
-    # parent, see actions_required
+    # this will only get run when sampler updates, as sample_trigger is output's
+    # only parent
     add_action!(output) do
         set_value!(output, input.value)
     end
 end
-
 
 """
     merge(inputs...)
