@@ -57,7 +57,7 @@ Signal{T}(x::T, parents=(); name::String=auto_name!("input")) =
 Signal{T}(::Type{T}, x, parents=(); name::String=auto_name!("input")) =
     Signal{T}(x, parents, Dict{Signal, Int}(), name)
 # A signal of types
-Signal(t::Type; name::String = auto_name!("input")) = Signal(Type, t, name)
+Signal{T}(t::Type{T}; name::String = auto_name!("input")) = Signal(Type{T}, t, name=name)
 
 log_gc(n) =
     @async begin

@@ -3,6 +3,8 @@ using Reactive
 ## Basics
 
 facts("Basic checks") do
+    x = Signal(Float32)
+    @fact isa(x, Signal{Type{Float32}}) --> true
 
     a = Signal(number(); name="a")
     b = map(x -> x*x, a; name="b")
