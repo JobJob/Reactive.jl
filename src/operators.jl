@@ -99,16 +99,17 @@ function connect_filterwhen(output, predicate, input)
 end
 
 """
-    foldp(f, init, input)
+    foldp(f, init, inputs...)
 
 [Fold](http://en.wikipedia.org/wiki/Fold_(higher-order_function)) over past values.
 
-Accumulate a value as the `input` signal changes. `init` is the initial value of the accumulator.
-`f` should take 2 arguments: the current accumulated value and the current update, and result in the next accumulated value.
+Accumulate a value as the input signals change. `init` is the initial value of the accumulator.
+`f` should take `1 + length(inputs)` arguments: the first is the current accumulated value and the rest are the current input signal values. `f` will be called when one or more of the `inputs` updates. It should return the next accumulated value.
 """
-function foldp(f::Function, v0, inputs...; typ=typeof(v0), name=auto_name!("foldp", inputs...))
-    n = Signal(typ, v0, inputs; name=name)
-    connect_foldp(f, v0, n, inputs)
+function foldp(f::Function, v0, input::Signal, inputsrest::Signal...;
+        typ=typeof(v0), name=auto_name!("foldp", input, inputsrest...))
+    n = Signal(typ, v0, (input, inputsrest...); name=name)
+    connect_foldp(f, v0, n, (input, inputsrest...))
     n
 end
 

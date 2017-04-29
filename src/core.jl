@@ -288,12 +288,15 @@ deactivate!(noderef::WeakRef) = (noderef.value != nothing &&
 isactive(noderef::WeakRef) = (noderef.value != nothing && noderef.value.active)
 
 """
-A Node's actions should be run if any of its parents are active. If the node
-doesn't have actions, don't set it to active (the last condition is required
-for fpswhen)
+A node's actions should be run if any of its parents are active, since that
+generally means one (or more) of the parent nodes' values have changed. If the
+node doesn't have actions, don't set it to active, since its value won't be
+updated, meaning the update propagation can stop. N.b. The non-active when node
+has no actions mechanism is relied on for correct behaviour by fpswhen, and
+possibly other operators, i.e. it is not just an optimisation.
 """
 function run_node(node::Signal)
-    if length(node.actions) > 0 && any(isactive, node.parents)
+    if any(isactive, node.parents) && length(node.actions) > 0
         activate!(node)
         foreach(runaction, node.actions)
     end
@@ -309,14 +312,14 @@ function run_push(pushnode::Signal, val, onerror, dont_remove_dead=false)
         set_value!(pushnode, val)
         activate!(pushnode)
 
-        # run the actions for all appropriate nodes
+        # run the actions for all downstream nodes
         for noderef in nodes[pushnode.id:end]
             noderef.value == nothing && continue
-            node = noderef.value
+            node = noderef.value # node must be set here - see onerror call below
             run_node(node)
         end
-        # reset active status to false for all nodes downstream from pushnode
-        # foreach(deactivate!, nodes) #[pushnode.id:end])
+
+        # reset active status to false for pushnode and all downstream nodes
         for noderef in nodes[pushnode.id:end]
             noderef.value == nothing && continue
             deactivate!(noderef.value)

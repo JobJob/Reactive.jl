@@ -6,7 +6,7 @@ Action updates the node whose `actions` Vector it's in with `set_value!` (pre-up
 1. map (multiple parents)
 1. filter (calls deactivate! when f(value(input)) is false)
 1. filterwhen (calls deactivate! when value(input) is false)
-1. foldp
+1. foldp (single parent)
 1. sampleon (sample trigger input is its only parent)
 1. merge (multiple parents)
 1. previous (caches the previous update)

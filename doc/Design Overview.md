@@ -16,11 +16,21 @@ This should ensure that parents of nodes update before their children, and signa
 
 Each node (`Signal`) is added to the end of a Vector called `nodes` on creation, so that `nodes` holds Signals in the order they were created.
 
-Each Signal holds a field `actions` which are basically just 0-argument functions that update the value of the node or perform some helper function to that end.
+Each Signal holds a field `actions` which are just 0-argument functions that update the value of the node or perform some helper function to that end. In some cases the action will update, push to, or set a Timer to update a different node.
 
-Each Signal also has a field `active` which stores whether or not the node was active (had its actions run) in the current push. A Signal will be set to active if it is `push!`ed to, or if any of its parent `Signal`s were active.
+Each Signal also has a field `active` which flags whether or not the node was `push!`ed to, or had/should have its actions run, in processing the current push. In essence it flags whether or not the node's value has been updated, or should be updated.
 
-On processing each `push!`, we run through `nodes` and execute the actions of each node if any of its parents were active.
+Nodes that are pushed to will always be set to active, other (downstream) nodes will be set to active, and their actions run if any of their parent `Signal`s were active in processing the current `push!`.
+
+On processing each `push!`, we run through `nodes` and execute the actions of each node if it has been set to active, i.e. if it was pushed to, or if any of its parents were active.
+
+#### Pushing to Non Input Nodes
+
+Sometimes it is desirable to push! a value to a non-input node, e.g. a `map` on an input `Signal(...)`, rather than it attaining that value by running its action. In order for this pushed value to "stick", it's important that the map's action does not run after pushing to the node - since the map's action would update the map node to the return value of the function used to create the map, which in general would not be equal to the pushed value.
+
+This is achieved simply by the check in `run_node` requiring an active parent in order to run the node's actions.
+
+A consequence of this is any actions attached to a node with no parents, e.g. an input `Signal(...)` node, will not run. Accordingly, all actions that rely on an update to a node, are attached to a child of the node, and not the node itself. See [dev notes](dev%20notes.md) for more details.
 
 #### Filter
 
@@ -28,4 +38,4 @@ Filter works by setting the filter node's active field to false when the filter 
 
 #### More info
 
-Please feel free to open issues if things are not clear.
+There is some info on each operator in the [dev notes](dev%20notes.md). Please feel free to open issues if things are not clear.

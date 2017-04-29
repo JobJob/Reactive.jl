@@ -9,13 +9,16 @@ facts("Timing functions") do
         @fact queue_size() --> 0
         push!(b, true)
 
-        dt = @elapsed Reactive.run(3) # the first one starts the timer
+        step() # processing the push to b will start the fpswhen's timer
+        # then we wait for two pushes from the timer, which should take ~ 1sec
+        dt = @elapsed Reactive.run(2)
         push!(b, false)
-        Reactive.run(1)
+        Reactive.run(1) # setting b to false should stop the timer
 
-        sleep(0.11) # no more updates
+        sleep(0.75) # no more updates
         @fact queue_size() --> 0
 
+        @show dt
         @fact dt --> roughly(1, atol=0.25) # mac OSX needs a lot of tolerence here
         @fact value(acc) --> 2
 
